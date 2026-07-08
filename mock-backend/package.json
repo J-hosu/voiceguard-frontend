@@ -1,0 +1,13 @@
+{
+  "name": "voiceguard-mock-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "VoiceGuard 임시 목 백엔드 (실제 백엔드 계약을 흉내내는 테스트용 WS/HTTP 서버)",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
