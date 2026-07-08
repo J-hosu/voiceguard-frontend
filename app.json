@@ -45,7 +45,8 @@
         {
           "iCloudContainerEnvironment": "Production"
         }
-      ]
+      ],
+      "expo-speech-recognition"
     ]
   }
 }

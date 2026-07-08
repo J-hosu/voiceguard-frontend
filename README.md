@@ -50,14 +50,25 @@ eas build -p android --profile preview      # 빌드 완료 후 APK 다운로드
 
 APK를 폰으로 옮겨 설치(출처를 알 수 없는 앱 허용). 온디바이스 실시간 STT는 이 빌드(dev/preview build)에서 활성화 가능 — 아래 참조.
 
-## 실제 온디바이스 STT (선택, dev build 전용)
+## 실제 온디바이스 STT (구현 완료 · dev build에서 동작)
 
-Expo Go에서는 네이티브 STT가 불가해 기본은 시나리오 재생(목). 실기기 실시간 인식을 원하면:
+STT는 이미 연결돼 있습니다. **Expo Go에서는 자동으로 목(시나리오 재생)** 으로 폴백하고, **dev/preview build에서는 실제로 동작**합니다(`executionEnvironment`로 감지).
 
-1. `npx expo install expo-speech-recognition`
-2. `app.json` plugins에 `"expo-speech-recognition"` 추가 후 dev/preview build
-3. `src/core/config/env.ts` 의 `USE_MOCK_STT=false`
-4. `src/data/services/sttService.ts` 의 `RealSttService` 를 모듈 이벤트에 연결
+- **실시간(기능2)**: `expo-speech-recognition` = 폰 내장 음성인식. **모델 준비 불필요.** 침묵 시 자동 재시작 루프 포함. (`src/data/services/sttService.ts`)
+- **파일(기능1)**: `whisper.rn` = 온디바이스 Whisper. **최초 1회 모델 다운로드**(`WHISPER_MODEL`, 기본 `ggml-base.bin` ≈148MB → 오프라인 캐시). (`src/data/services/fileStt.ts`)
+  - whisper.cpp는 **16kHz WAV 입력** 전제 → mp3/m4a는 전사 실패 시 목으로 폴백(향후 ffmpeg 트랜스코딩 여지).
+
+### dev build로 실제 STT 켜기 (Expo Go 대체)
+
+```bash
+npm i -g eas-cli && eas login
+eas build -p android --profile development     # 개발용 dev client APK
+# 폰에 설치 후:
+npx expo start --dev-client                    # QR 스캔 → 실제 STT 동작
+```
+
+- `USE_MOCK_STT`(env.ts) 기본값 `false` = "가능하면 실제, Expo Go면 목". 항상 목으로 강제하려면 `true`.
+- 한국어 파일 정확도를 더 원하면 `WHISPER_MODEL`을 `ggml-small.bin`(≈488MB)로 교체.
 
 > 실제 통신사 통화 오디오 가로채기는 Android 정책상 불가 → 스피커폰+마이크 감지 데모로 대체(기능명세서 §13).
 
