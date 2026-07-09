@@ -26,7 +26,17 @@ npm start              # Metro 실행 → 터미널에 QR 코드
 3. Expo Go로 터미널의 **QR 코드 스캔** → 앱이 바로 실행됨.
    - 방화벽으로 안 붙으면 `npx expo start --tunnel` 사용.
 
-기본값(`src/core/config/env.ts`)이 **완전 목모드**(`USE_MOCK_WS=true`, `USE_MOCK_STT=true`)라 백엔드 없이 모든 화면이 동작한다. 실시간 감지는 스크립트 시나리오가 재생되며 위험도가 정상→주의→위험으로 상승하고 임계값에서 경고 모달이 뜬다.
+기본값(`src/core/config/env.ts`)은 `USE_MOCK_WS=true`(앱 내부 규칙 분석) + `USE_MOCK_STT=false`(가능하면 실제 STT, Expo Go/웹에선 자동 목). 실시간 감지는 시나리오가 재생되며 위험도가 정상→주의→위험으로 상승하고 임계값에서 경고 모달이 뜬다.
+
+## 웹에서 실행/시연 (컴퓨터, 목데이터)
+
+```bash
+npm run web            # 브라우저에서 열림 (http://localhost:8081)
+```
+
+- 데스크톱에서는 **폰처럼 가운데 모바일 폭**으로 표시되어 시연에 적합.
+- 웹은 네이티브 STT/whisper가 없어 **자동 목(시나리오 재생) 모드**로 동작(안정적). UI·흐름·분석 로직은 폰과 동일.
+- 정적 빌드로 배포·공유하려면: `npx expo export --platform web` → `dist/` 를 정적 서버로 서빙.
 
 ## 실제 백엔드 / WS 경로 테스트
 

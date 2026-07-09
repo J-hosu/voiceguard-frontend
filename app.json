@@ -31,7 +31,10 @@
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.VIBRATE"
+        "android.permission.VIBRATE",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ]
     },
     "web": {
@@ -47,6 +50,13 @@
         }
       ],
       "expo-speech-recognition"
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "34f70c6f-3643-4041-a797-1fe09bf7f21b"
+      }
+    },
+    "owner": "hosu"
   }
 }

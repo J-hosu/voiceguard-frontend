@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { Pressable, ScrollView, Vibration, View } from 'react-native';
+import { Platform, Pressable, ScrollView, Vibration, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -54,8 +54,10 @@ export default function Realtime() {
 
   const { state, start, stop, buildResult } = useCallSession(scenario, {
     onDangerCross: (s) => {
-      Vibration.vibrate([0, 400, 200, 400]);
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      if (Platform.OS !== 'web') {
+        Vibration.vibrate([0, 400, 200, 400]);
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+      }
       router.push({
         pathname: '/warning',
         params: {
