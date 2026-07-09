@@ -12,9 +12,19 @@ import { fixedColors } from '@/core/theme/colors';
 import { formatDuration } from '@/core/utils/format';
 import { categorizeType } from '@/core/utils/keywords';
 import { riskHeadline, type RiskLevel } from '@/core/utils/riskLevel';
-import { getScenario } from '@/data/mock/mockScenarios';
+import { USE_MOCK_STT } from '@/core/config/env';
+import { getScenario, type Scenario } from '@/data/mock/mockScenarios';
 import { useCallSession } from '@/hooks/useCallSession';
 import { useCallStore } from '@/state/callStore';
+
+/** 실사용(실기기 STT) 라이브 세션: 대본 turns 없이 시작하는 통화. */
+const LIVE_SCENARIO: Scenario = {
+  id: 'live',
+  title: '실시간 통화',
+  phone: '실시간 통화',
+  source: 'realtime',
+  turns: [],
+};
 
 const LEVEL_COLOR: Record<RiskLevel, string> = {
   safe: '#34C77B',
@@ -47,7 +57,12 @@ function CallActionButton({ icon, label }: { icon: IconName; label: string }) {
 export default function Realtime() {
   const router = useRouter();
   const params = useLocalSearchParams<{ scenario?: string; view?: string }>();
-  const scenario = useMemo(() => getScenario(params.scenario), [params.scenario]);
+  // scenario 파라미터가 있으면 데모 시나리오, 없으면 실사용 라이브 세션.
+  // (데모 STT 모드에서는 파라미터 없을 때 기본 시나리오로 폴백)
+  const scenario = useMemo(
+    () => (params.scenario ? getScenario(params.scenario) : USE_MOCK_STT ? getScenario(null) : LIVE_SCENARIO),
+    [params.scenario],
+  );
   const addResult = useCallStore((s) => s.addResult);
   const scrollRef = useRef<ScrollView>(null);
   const view = params.view === 'chat' ? 'chat' : 'call';
@@ -179,8 +194,16 @@ export default function Realtime() {
                 <AppText weight="800" color={levelColor} style={{ fontSize: 16, marginTop: 4 }}>
                   {state.level === 'safe' ? '분석 중' : `• ${riskHeadline(state.level)}`}
                 </AppText>
-                <AppText color={fixedColors.callTextDim} style={{ fontSize: 12, marginTop: 3 }} numberOfLines={1}>
-                  {recentKeywords.length ? recentKeywords.join(' · ') : '위험 신호를 분석하고 있습니다'}
+                <AppText
+                  color={state.error ? fixedColors.rec : fixedColors.callTextDim}
+                  style={{ fontSize: 12, marginTop: 3 }}
+                  numberOfLines={1}
+                >
+                  {state.error
+                    ? `연결 오류: ${state.error}`
+                    : recentKeywords.length
+                      ? recentKeywords.join(' · ')
+                      : '위험 신호를 분석하고 있습니다'}
                 </AppText>
               </View>
             </View>
@@ -312,11 +335,13 @@ export default function Realtime() {
                 borderTopColor: '#2A3442',
               }}
             >
-              <Icon name="activity" size={18} color="#2563EB" />
-              <AppText color="#9AA5B3" style={{ fontSize: 13, flex: 1 }}>
-                {state.finished
-                  ? '분석 완료 · 통화 화면에서 종료를 누르세요'
-                  : 'AI가 실시간으로 대화를 분석하고 있습니다...'}
+              <Icon name="activity" size={18} color={state.error ? fixedColors.rec : '#2563EB'} />
+              <AppText color={state.error ? fixedColors.rec : '#9AA5B3'} style={{ fontSize: 13, flex: 1 }}>
+                {state.error
+                  ? `연결 오류: ${state.error}`
+                  : state.finished
+                    ? '분석 완료 · 통화 화면에서 종료를 누르세요'
+                    : 'AI가 실시간으로 대화를 분석하고 있습니다...'}
               </AppText>
               <Pressable onPress={endCall} hitSlop={8}>
                 <AppText weight="700" color={fixedColors.rec} style={{ fontSize: 13 }}>

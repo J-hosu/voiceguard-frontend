@@ -16,6 +16,7 @@ export interface CallSessionState {
   elapsedSec: number;
   running: boolean;
   finished: boolean;
+  error: string | null; // 백엔드 연결/분석 오류 (실사용 시 표시)
 }
 
 /**
@@ -37,6 +38,7 @@ export function useCallSession(
     elapsedSec: 0,
     running: false,
     finished: false,
+    error: null,
   });
 
   // 세션은 start() 시점에 1회 생성(실제 WS 소켓이 렌더마다 새로 열리는 것 방지)
@@ -53,6 +55,10 @@ export function useCallSession(
 
   const handleEvent = useCallback(
     (e: AnalysisEvent) => {
+      if (e.type === 'error') {
+        setState((prev) => ({ ...prev, error: e.message }));
+        return;
+      }
       if (e.type === 'analysis_ack' || e.type === 'phishing_detected') {
         const score = e.risk_score;
         maxScore.current = Math.max(maxScore.current, score);

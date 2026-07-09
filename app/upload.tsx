@@ -11,10 +11,9 @@ import { IconCircle } from '@/components/IconCircle';
 import { InfoBanner } from '@/components/InfoBanner';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useTheme } from '@/core/theme/theme';
-import { buildResultFromScenario } from '@/data/mock/mockResults';
-import { scenarioLoan } from '@/data/mock/mockScenarios';
-import { fileSttEnabled, transcribeAudioFile } from '@/data/services/fileStt';
-import { buildResultFromTranscript } from '@/data/services/resultBuilder';
+import { categorizeType, extractKeywords } from '@/core/utils/keywords';
+import type { CallResult, TranscriptTurn } from '@/data/models/types';
+import { analyzeAudioFile } from '@/data/services/uploadAudio';
 import { useCallStore } from '@/state/callStore';
 
 function formatSize(bytes?: number | null): string {
@@ -26,7 +25,9 @@ export default function Upload() {
   const { colors } = useTheme();
   const router = useRouter();
   const addResult = useCallStore((s) => s.addResult);
-  const [file, setFile] = useState<{ name: string; size?: number; uri?: string } | null>(null);
+  const [file, setFile] = useState<{ name: string; size?: number; uri?: string; mime?: string } | null>(
+    null,
+  );
   const [progress, setProgress] = useState(0);
   const [phase, setPhase] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
@@ -43,64 +44,79 @@ export default function Upload() {
     const res = await DocumentPicker.getDocumentAsync({ type: 'audio/*', copyToCacheDirectory: true });
     if (!res.canceled && res.assets?.[0]) {
       const a = res.assets[0];
-      setFile({ name: a.name, size: a.size ?? undefined, uri: a.uri });
+      setFile({ name: a.name, size: a.size ?? undefined, uri: a.uri, mime: a.mimeType ?? undefined });
       setProgress(0);
       setPhase('');
     }
   };
 
-  // 목 폴백: 진행률 애니메이션 후 시나리오 결과로 이동
-  const runMockAnalysis = (id: number) => {
-    setPhase('분석 중');
+  const startProgressAnim = () => {
     timer.current = setInterval(() => {
-      setProgress((p) => {
-        const next = p + 8;
-        if (next >= 100) {
-          if (timer.current) clearInterval(timer.current);
-          const base = buildResultFromScenario(scenarioLoan, { id, daysAgo: 0 });
-          addResult({ ...base, source: 'file', createdAt: new Date().toISOString() });
-          setTimeout(() => router.replace(`/result?id=${id}`), 250);
-          return 100;
-        }
-        return next;
-      });
-    }, 180);
+      setProgress((p) => (p < 90 ? p + 3 : p));
+    }, 220);
+  };
+  const stopProgressAnim = () => {
+    if (timer.current) clearInterval(timer.current);
+    timer.current = null;
   };
 
   const analyze = async () => {
-    const id = Math.floor(Date.now());
+    if (!file?.uri) {
+      Alert.alert('파일 선택 필요', '분석할 음성 파일(mp3/wav/m4a)을 먼저 선택하세요.');
+      return;
+    }
     setAnalyzing(true);
     setProgress(0);
+    startProgressAnim();
 
-    if (fileSttEnabled) {
-      if (!file?.uri) {
-        setAnalyzing(false);
-        Alert.alert('파일 선택 필요', '온디바이스 STT로 분석할 오디오 파일을 먼저 선택하세요.');
-        return;
-      }
-      setPhase('음성 인식 모델 준비 중');
-      const transcript = await transcribeAudioFile(file.uri, {
-        onModelProgress: (p) => setProgress(Math.round(p * 100)),
-        onTranscribeProgress: (p) => {
-          setPhase('음성 전사 중');
-          setProgress(Math.round(p * 100));
-        },
+    try {
+      // 원본 오디오를 백엔드로 업로드 → 백엔드가 CLOVA 화자분리 전사 + 위험도 채점을 한 번에 수행.
+      // (프론트는 CLOVA를 직접 부르지 않음 = API 키 미노출)
+      setPhase('업로드 · 화자분리 · 위험도 분석 중');
+      const analysis = await analyzeAudioFile({ uri: file.uri, name: file.name, mime: file.mime });
+      if (analysis.segments.length === 0) throw new Error('전사된 발화가 없습니다. 파일을 확인하세요.');
+
+      // 화자 라벨별로 좌/우 표시 구분 (첫 화자=좌, 둘째 화자=우)
+      const speakerSide = new Map<string, boolean>();
+      const turns: TranscriptTurn[] = analysis.segments.map((s, i) => {
+        if (!speakerSide.has(s.speaker)) speakerSide.set(s.speaker, speakerSide.size % 2 === 1);
+        return {
+          turnIndex: i + 1,
+          role: s.speaker,
+          isMine: speakerSide.get(s.speaker) ?? false,
+          content: s.text,
+          atSec: Math.round(s.start / 1000),
+          keywords: extractKeywords(s.text, 4),
+        };
       });
-      if (transcript && transcript.text.trim()) {
-        const result = buildResultFromTranscript(transcript, { id, source: 'file', phone: file.name });
-        addResult(result);
-        router.replace(`/result?id=${id}`);
-        return;
-      }
-      Alert.alert(
-        '온디바이스 전사 실패',
-        'WAV(16kHz) 형식이 아니거나 인식에 실패했습니다. 데모 시나리오로 대체합니다.',
-      );
-    }
 
-    // Expo Go / 목모드 / 전사 실패 → 목 시나리오
-    if (!file) setFile({ name: 'call_demo.wav', size: 4.2 * 1024 * 1024 });
-    runMockAnalysis(id);
+      stopProgressAnim();
+      setProgress(100);
+
+      const fullText = turns.map((t) => t.content).join('\n');
+      const id = Math.floor(Date.now());
+      const result: CallResult = {
+        id,
+        name: file.name,
+        category: categorizeType(analysis.matchedPatterns, fullText),
+        finalScore: analysis.riskScore,
+        matchedPatterns: analysis.matchedPatterns,
+        coreEvidence: analysis.coreEvidence || '분석된 위험 근거가 없습니다.',
+        keywords: extractKeywords(fullText, 6),
+        turns,
+        source: 'file',
+        createdAt: new Date().toISOString(),
+        durationSec: Math.round((analysis.segments[analysis.segments.length - 1]?.end ?? 0) / 1000),
+      };
+      addResult(result);
+      setTimeout(() => router.replace(`/result?id=${id}`), 250);
+    } catch (e) {
+      stopProgressAnim();
+      setAnalyzing(false);
+      setProgress(0);
+      setPhase('');
+      Alert.alert('분석 실패', `${e instanceof Error ? e.message : e}`);
+    }
   };
 
   return (
@@ -126,7 +142,7 @@ export default function Upload() {
               여기로 파일을 올려주세요
             </AppText>
             <AppText weight="600" color="rgba(255,255,255,0.85)" style={{ fontSize: 12.5, marginTop: 7 }}>
-              MP3 · WAV · 3~5분 · 50MB 이하
+              MP3 · WAV · M4A · 3~5분 · 50MB 이하
             </AppText>
             <Button
               title="파일 선택"
@@ -139,7 +155,7 @@ export default function Upload() {
           {file ? (
             <View>
               <AppText weight="800" style={{ fontSize: 16, marginBottom: 11 }}>
-                {analyzing ? (phase || '처리 중') : '선택한 파일'}
+                {analyzing ? phase || '처리 중' : '선택한 파일'}
               </AppText>
               <Card>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
@@ -163,18 +179,12 @@ export default function Upload() {
             </View>
           ) : null}
 
-          <InfoBanner
-            text={
-              fileSttEnabled
-                ? '온디바이스 Whisper로 파일을 전사한 뒤 위험도를 분석합니다. 최초 1회 모델 다운로드가 필요하며, 전사에 시간이 걸릴 수 있어요.'
-                : '데모(목) 모드: 업로드 후 온디바이스 STT로 텍스트를 변환하고 위험도를 분석합니다. (실제 전사는 dev build에서 동작)'
-            }
-          />
+          <InfoBanner text="업로드하면 CLOVA로 화자를 구분해 전사한 뒤, 백엔드 AI가 위험도를 분석합니다. 파일 길이에 따라 시간이 걸릴 수 있어요." />
         </View>
 
         <View style={{ padding: 20 }}>
           <Button
-            title={analyzing ? (phase || '분석 중...') : '분석 시작'}
+            title={analyzing ? phase || '분석 중...' : '분석 시작'}
             onPress={analyze}
             loading={analyzing}
             style={{ minHeight: 56 }}
