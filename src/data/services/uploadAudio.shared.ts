@@ -6,8 +6,8 @@
  * 엔드포인트 URL · MIME 추론 · 응답 파싱은 이 모듈을 공유한다.
  *
  * 백엔드: POST {BASE_URL_HTTP}/calls/analyze-audio (multipart, field=file)
- * 응답(app/main.py analyze_call_audio):
- *   { log_id, file_name, segments:[{chunk_id,start_time(ms),end_time(ms),speaker,text}],
+ * 응답(API_SPEC 6. 녹음 파일 분석):
+ *   { log_id, file_name, segments:[{chunk_id,start_time(초),end_time(초),speaker,text}],
  *     is_phishing, risk_score, risk_level, phishing_type, matched_patterns, core_evidence, notification }
  */
 import { ANALYZE_AUDIO_PATH, BASE_URL_HTTP } from '@/core/config/env';
@@ -20,12 +20,12 @@ export interface PickedAudio {
   mime?: string;
 }
 
-/** 화자분리된 발화 세그먼트 (start/end 단위: ms) */
+/** 발화 세그먼트 (start/end 단위: 초). 파일 분석은 화자분리 없음 → speaker='speaker_a' */
 export interface AudioSegment {
   speaker: string;
   text: string;
-  start: number;
-  end: number;
+  start: number; // 초
+  end: number; // 초
 }
 
 /** 백엔드 파일 분석 결과 (정규화) */

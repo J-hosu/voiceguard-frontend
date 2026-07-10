@@ -20,15 +20,15 @@ export const USE_MOCK_WS = false;
 export const USE_MOCK_STT = false;
 
 /**
- * 백엔드 주소 (CLOVA STT·화자분리 + 채점 전담 백엔드).
+ * 백엔드 주소 (파일 전사 STT + 채점 전담).
  *
- * 파일 분석은 이제 프론트에서 CLOVA를 직접 부르지 않고, 원본 오디오를 백엔드
- * POST /calls/analyze-audio 로 업로드한다. CLOVA 키는 백엔드 .env 에만 있으므로
- * 프론트 번들에는 어떤 키도 포함되지 않는다.
+ * 파일(녹음) 분석: 프론트는 캡처한 오디오 원본을 그대로 백엔드로 업로드하고,
+ * 백엔드가 Whisper로 전사(화자분리 없음) 후 KoELECTRA/RAG로 채점한다.
+ * 프론트에서 STT/변환을 하지 않으므로 재인코딩이 없다.
+ * 실시간 분석은 별도: 웹=Web Speech API, 앱=온디바이스 STT(WS로 텍스트 전송).
  *
- * .env(EXPO_PUBLIC_API_BASE)로 주소를 덮어쓸 수 있다. 실기기(Expo Go)에서 테스트할 땐
+ * .env(EXPO_PUBLIC_API_BASE)로 주소를 덮어쓸 수 있다. 실기기(Expo Go) 테스트 시
  * 127.0.0.1 대신 PC의 LAN IP(예: http://192.168.0.10:8000)를 넣어야 한다.
- *   EXPO_PUBLIC_API_BASE=http://192.168.0.10:8000
  */
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000').replace(/\/$/, '');
 
@@ -37,7 +37,7 @@ export const BASE_URL_HTTP = API_BASE;
 /** 실제 백엔드 WS 주소 (http→ws, https→wss 자동 변환) */
 export const BASE_URL_WS = API_BASE.replace(/^http/, 'ws');
 
-/** 파일(녹음) 분석 업로드 엔드포인트 경로 */
+/** 파일(녹음) 업로드 → 백엔드 전사+채점 엔드포인트 경로 */
 export const ANALYZE_AUDIO_PATH = '/calls/analyze-audio';
 
 /** 실시간 분석 WS 엔드포인트 경로 */

@@ -1,6 +1,5 @@
-import { USE_MOCK_STT } from '@/core/config/env';
 import type { Scenario } from '@/data/mock/mockScenarios';
-import { MockSttService, type RecognizedTurn, type SttService } from './sttMock';
+import type { RecognizedTurn, SttService } from './sttMock';
 
 export type { RecognizedTurn, SttService } from './sttMock';
 
@@ -91,8 +90,9 @@ class WebSpeechSttService implements SttService {
   }
 }
 
-export function createSttService(scenario: Scenario, speed = 1): SttService {
-  // USE_MOCK_STT=true거나 브라우저 미지원이면 목, 아니면 실제 브라우저 음성인식
-  if (USE_MOCK_STT || !getSpeechRecognition()) return new MockSttService(scenario, speed);
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function createSttService(_scenario: Scenario, _speed = 1): SttService {
+  // 웹 실시간 STT는 브라우저 음성인식만 사용한다(목 폴백 제거).
+  // 미지원 브라우저(크롬/엣지 외)에서는 start() 시 onError로 안내한다.
   return new WebSpeechSttService();
 }

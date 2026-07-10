@@ -85,7 +85,7 @@ export default function Upload() {
           role: s.speaker,
           isMine: speakerSide.get(s.speaker) ?? false,
           content: s.text,
-          atSec: Math.round(s.start / 1000),
+          atSec: Math.round(s.start), // start 단위: 초
           keywords: extractKeywords(s.text, 4),
         };
       });
@@ -106,7 +106,7 @@ export default function Upload() {
         turns,
         source: 'file',
         createdAt: new Date().toISOString(),
-        durationSec: Math.round((analysis.segments[analysis.segments.length - 1]?.end ?? 0) / 1000),
+        durationSec: Math.round(analysis.segments[analysis.segments.length - 1]?.end ?? 0), // end 단위: 초
       };
       addResult(result);
       setTimeout(() => router.replace(`/result?id=${id}`), 250);
