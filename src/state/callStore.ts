@@ -1,46 +1,36 @@
 import { create } from 'zustand';
-import type { CallResult } from '@/data/models/types';
-import { loadJson, saveJson, STORAGE_KEYS } from '@/data/services/storage';
+import { fetchCalls as apiFetchCalls, type CallListItem } from '@/data/services/callsApi';
 
 /**
- * 통화 히스토리 저장소.
+ * 통화 히스토리 저장소 (백엔드 조회 기반).
  *
- * 백엔드에 단일 통화 상세 API(GET /calls/{id})가 없으므로, 세션 중 앱이 누적한
- * CallResult(실제 백엔드 분석 결과)를 로컬(AsyncStorage)에 보관해 히스토리/홈
- * 최근내역/월간 카운트의 데이터 소스로 쓴다. (시드 목데이터 제거 — 실사용)
+ * 결과는 분석 시점에 백엔드가 저장하므로, 앱은 GET /calls로 목록을 받아온다.
+ * (로컬 저장 없음 — 백엔드가 단일 진실 소스)
+ * 위험/주의/정상 카운트는 설정 임계값에 따라 화면에서 risk_score로 계산한다.
  */
 interface CallState {
-  saved: CallResult[]; // 사용자가 만든(영구 저장) 결과
-  results: CallResult[]; // 최신순 정렬 결과
-  hydrated: boolean;
-  hydrate: () => Promise<void>;
-  addResult: (r: CallResult) => void;
-  getResult: (id: number) => CallResult | undefined;
-  clearSaved: () => void;
+  calls: CallListItem[];
+  loaded: boolean; // 최초 로드 완료 여부
+  loading: boolean;
+  error: string | null;
+  fetchCalls: () => Promise<void>;
 }
 
-function recompute(saved: CallResult[]): CallResult[] {
-  return [...saved].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-  );
-}
-
-export const useCallStore = create<CallState>((set, get) => ({
-  saved: [],
-  results: recompute([]),
-  hydrated: false,
-  hydrate: async () => {
-    const saved = (await loadJson<CallResult[]>(STORAGE_KEYS.results)) ?? [];
-    set({ saved, results: recompute(saved), hydrated: true });
-  },
-  addResult: (r) => {
-    const saved = [r, ...get().saved];
-    void saveJson(STORAGE_KEYS.results, saved);
-    set({ saved, results: recompute(saved) });
-  },
-  getResult: (id) => get().results.find((r) => r.id === id),
-  clearSaved: () => {
-    void saveJson(STORAGE_KEYS.results, []);
-    set({ saved: [], results: recompute([]) });
+export const useCallStore = create<CallState>((set) => ({
+  calls: [],
+  loaded: false,
+  loading: false,
+  error: null,
+  fetchCalls: async () => {
+    set({ loading: true, error: null });
+    try {
+      const { calls } = await apiFetchCalls(100);
+      const sorted = [...calls].sort(
+        (a, b) => new Date(b.called_at).getTime() - new Date(a.called_at).getTime(),
+      );
+      set({ calls: sorted, loaded: true, loading: false });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e), loading: false, loaded: true });
+    }
   },
 }));

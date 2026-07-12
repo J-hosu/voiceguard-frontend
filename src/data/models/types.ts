@@ -30,6 +30,16 @@ export interface CallMessage {
   created_at: string;
 }
 
+/** 오디오 청크 분석 응답의 전사 1건 (백엔드 audio_analysis_ack.transcripts[]) */
+export interface BackendTranscript {
+  message_id?: number;
+  turn_index?: number;
+  role?: string; // 화자분리 없음 → 보통 'unknown'
+  content?: string;
+  start_time?: number; // 초
+  end_time?: number; // 초
+}
+
 /** WS 이벤트 (서버 → 클라이언트) — 판별 유니온 */
 export type AnalysisEvent =
   | { type: 'call_started'; call: CallLog }
@@ -52,6 +62,33 @@ export type AnalysisEvent =
       notification?: unknown;
       message?: CallMessage;
     }
+  // ── 오디오 청크(실시간 스트리밍) 응답 ── (전사는 백엔드 Whisper가 수행)
+  | {
+      type: 'audio_analysis_ack';
+      log_id: number;
+      chunk_index?: number;
+      is_phishing: false;
+      risk_score: number;
+      risk_level: BackendRiskLevel;
+      phishing_type?: string;
+      transcripts?: BackendTranscript[];
+      message_ids?: number[];
+    }
+  | {
+      type: 'audio_phishing_detected';
+      log_id: number;
+      chunk_index?: number;
+      is_phishing: true;
+      risk_score: number;
+      risk_level: BackendRiskLevel;
+      matched_patterns: string[];
+      core_evidence: string;
+      phishing_type?: string;
+      transcripts?: BackendTranscript[];
+      notification?: unknown;
+      message_ids?: number[];
+    }
+  | { type: 'audio_chunk_error'; log_id?: number; chunk_index?: number; message: string }
   | { type: 'error'; message: string };
 
 /** 실시간 대화 로그 1턴 (앱이 로컬 기록) */

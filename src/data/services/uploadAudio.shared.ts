@@ -63,18 +63,22 @@ export function guessMime(fileName: string): string {
 
 /** fetch 응답을 검사하고 정규화된 분석 결과로 변환한다. */
 export async function parseAnalyzeResponse(res: Response): Promise<AudioAnalysisResult> {
+  const raw = await res.text().catch(() => '');
+  // 디버깅: 백엔드 원본 응답을 콘솔에 남긴다(웹 F12 Console에서 확인).
+  // eslint-disable-next-line no-console
+  console.log('[VoiceGuard] analyze-audio 응답', res.status, raw.slice(0, 3000));
+
   if (!res.ok) {
-    let detail = '';
+    let detail = raw;
     try {
-      const body = (await res.json()) as { detail?: string };
-      detail = body?.detail ?? '';
+      detail = (JSON.parse(raw) as { detail?: string })?.detail ?? raw;
     } catch {
-      detail = await res.text().catch(() => '');
+      /* raw 유지 */
     }
     throw new Error(`분석 실패 (${res.status}) ${detail}`.trim());
   }
 
-  const data = (await res.json()) as {
+  let data: {
     log_id?: number;
     segments?: { start_time?: number; end_time?: number; speaker?: unknown; text?: string }[];
     is_phishing?: boolean;
@@ -84,6 +88,11 @@ export async function parseAnalyzeResponse(res: Response): Promise<AudioAnalysis
     matched_patterns?: string[];
     core_evidence?: string;
   };
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error('서버 응답을 JSON으로 해석할 수 없습니다: ' + raw.slice(0, 200));
+  }
 
   const segments: AudioSegment[] = (data.segments ?? [])
     .map((s) => ({

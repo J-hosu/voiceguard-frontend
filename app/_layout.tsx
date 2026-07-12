@@ -12,14 +12,14 @@ import { useSettingsStore } from '@/state/settingsStore';
 export default function RootLayout() {
   const hydrateSettings = useSettingsStore((s) => s.hydrate);
   const hydrateApp = useAppStore((s) => s.hydrate);
-  const hydrateCalls = useCallStore((s) => s.hydrate);
+  const fetchCalls = useCallStore((s) => s.fetchCalls);
   const { colors, isDark } = useTheme();
 
   useEffect(() => {
     void hydrateSettings();
     void hydrateApp();
-    void hydrateCalls();
-  }, [hydrateSettings, hydrateApp, hydrateCalls]);
+    void fetchCalls(); // 히스토리는 백엔드에서 조회
+  }, [hydrateSettings, hydrateApp, fetchCalls]);
 
   const stack = (
     <Stack

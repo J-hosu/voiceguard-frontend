@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, View } from 'react-native';
+import { ActivityIndicator, Alert, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
@@ -8,11 +8,8 @@ import { Button } from '@/components/Button';
 import { Card } from '@/components/Card';
 import { Icon } from '@/components/Icon';
 import { IconCircle } from '@/components/IconCircle';
-import { InfoBanner } from '@/components/InfoBanner';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { useTheme } from '@/core/theme/theme';
-import { categorizeType, extractKeywords } from '@/core/utils/keywords';
-import type { CallResult, TranscriptTurn } from '@/data/models/types';
 import { analyzeAudioFile } from '@/data/services/uploadAudio';
 import { useCallStore } from '@/state/callStore';
 
@@ -24,18 +21,22 @@ function formatSize(bytes?: number | null): string {
 export default function Upload() {
   const { colors } = useTheme();
   const router = useRouter();
-  const addResult = useCallStore((s) => s.addResult);
+  const fetchCalls = useCallStore((s) => s.fetchCalls);
   const [file, setFile] = useState<{ name: string; size?: number; uri?: string; mime?: string } | null>(
     null,
   );
   const [progress, setProgress] = useState(0);
   const [phase, setPhase] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
+  const [analyzingMsg, setAnalyzingMsg] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const msgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(
     () => () => {
       if (timer.current) clearInterval(timer.current);
+      if (msgTimer.current) clearTimeout(msgTimer.current);
     },
     [],
   );
@@ -62,60 +63,41 @@ export default function Upload() {
 
   const analyze = async () => {
     if (!file?.uri) {
-      Alert.alert('파일 선택 필요', '분석할 음성 파일(mp3/wav/m4a)을 먼저 선택하세요.');
+      Alert.alert('파일 선택 필요', '분석할 음성 파일(mp3/wav)을 먼저 선택하세요.');
       return;
     }
     setAnalyzing(true);
+    setAnalyzingMsg(true);
+    setErrorMsg('');
     setProgress(0);
     startProgressAnim();
+    // "분석 중" 안내는 3초만 띄우고 사라지게 한다(실제 업로드/분석은 백그라운드로 계속).
+    if (msgTimer.current) clearTimeout(msgTimer.current);
+    msgTimer.current = setTimeout(() => setAnalyzingMsg(false), 3000);
 
     try {
-      // 원본 오디오를 백엔드로 업로드 → 백엔드가 CLOVA 화자분리 전사 + 위험도 채점을 한 번에 수행.
-      // (프론트는 CLOVA를 직접 부르지 않음 = API 키 미노출)
-      setPhase('업로드 · 화자분리 · 위험도 분석 중');
+      // 원본 오디오를 백엔드로 그대로 업로드 → 백엔드가 전사(STT) 후 위험도 채점.
+      // 결과는 백엔드 DB에 저장되고 log_id가 발급된다(로컬 저장 없음).
+      setPhase('분석 중');
       const analysis = await analyzeAudioFile({ uri: file.uri, name: file.name, mime: file.mime });
       if (analysis.segments.length === 0) throw new Error('전사된 발화가 없습니다. 파일을 확인하세요.');
-
-      // 화자 라벨별로 좌/우 표시 구분 (첫 화자=좌, 둘째 화자=우)
-      const speakerSide = new Map<string, boolean>();
-      const turns: TranscriptTurn[] = analysis.segments.map((s, i) => {
-        if (!speakerSide.has(s.speaker)) speakerSide.set(s.speaker, speakerSide.size % 2 === 1);
-        return {
-          turnIndex: i + 1,
-          role: s.speaker,
-          isMine: speakerSide.get(s.speaker) ?? false,
-          content: s.text,
-          atSec: Math.round(s.start), // start 단위: 초
-          keywords: extractKeywords(s.text, 4),
-        };
-      });
 
       stopProgressAnim();
       setProgress(100);
 
-      const fullText = turns.map((t) => t.content).join('\n');
-      const id = Math.floor(Date.now());
-      const result: CallResult = {
-        id,
-        name: file.name,
-        category: categorizeType(analysis.matchedPatterns, fullText),
-        finalScore: analysis.riskScore,
-        matchedPatterns: analysis.matchedPatterns,
-        coreEvidence: analysis.coreEvidence || '분석된 위험 근거가 없습니다.',
-        keywords: extractKeywords(fullText, 6),
-        turns,
-        source: 'file',
-        createdAt: new Date().toISOString(),
-        durationSec: Math.round(analysis.segments[analysis.segments.length - 1]?.end ?? 0), // end 단위: 초
-      };
-      addResult(result);
-      setTimeout(() => router.replace(`/result?id=${id}`), 250);
+      // 히스토리 목록을 백엔드에서 새로고침하고, 백엔드 log_id로 상세 화면 이동.
+      void fetchCalls();
+      setTimeout(() => router.replace(`/result?id=${analysis.logId}&score=${analysis.riskScore}`), 250);
     } catch (e) {
       stopProgressAnim();
+      if (msgTimer.current) clearTimeout(msgTimer.current);
       setAnalyzing(false);
+      setAnalyzingMsg(false);
       setProgress(0);
       setPhase('');
-      Alert.alert('분석 실패', `${e instanceof Error ? e.message : e}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      setErrorMsg(msg);
+      Alert.alert('분석 실패', msg);
     }
   };
 
@@ -142,7 +124,7 @@ export default function Upload() {
               여기로 파일을 올려주세요
             </AppText>
             <AppText weight="600" color="rgba(255,255,255,0.85)" style={{ fontSize: 12.5, marginTop: 7 }}>
-              MP3 · WAV · M4A · 3~5분 · 50MB 이하
+              MP3 · WAV · 3~5분 · 50MB 이하
             </AppText>
             <Button
               title="파일 선택"
@@ -179,7 +161,30 @@ export default function Upload() {
             </View>
           ) : null}
 
-          <InfoBanner text="업로드하면 CLOVA로 화자를 구분해 전사한 뒤, 백엔드 AI가 위험도를 분석합니다. 파일 길이에 따라 시간이 걸릴 수 있어요." />
+          {analyzingMsg ? (
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 10,
+                paddingVertical: 14,
+              }}
+            >
+              <ActivityIndicator color={colors.primary} />
+              <AppText weight="700" color={colors.primary} style={{ fontSize: 15 }}>
+                분석 중…
+              </AppText>
+            </View>
+          ) : null}
+
+          {errorMsg ? (
+            <View style={{ backgroundColor: colors.dangerFaint, borderRadius: 12, padding: 14 }}>
+              <AppText weight="700" color={colors.danger} style={{ fontSize: 13.5, lineHeight: 20 }}>
+                분석 실패: {errorMsg}
+              </AppText>
+            </View>
+          ) : null}
         </View>
 
         <View style={{ padding: 20 }}>

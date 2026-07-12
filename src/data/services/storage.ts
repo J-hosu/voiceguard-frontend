@@ -5,6 +5,7 @@ export const STORAGE_KEYS = {
   onboarded: 'vg.onboarded',
   settings: 'vg.settings',
   results: 'vg.results', // 세션 중 누적한 CallResult 목록(과거 상세 API 부재 우회)
+  transcripts: 'vg.transcripts', // 통화별 전사(대화 전문) 로컬 저장 (messages 조회 API 부재 우회)
 } as const;
 
 export async function loadJson<T>(key: string): Promise<T | null> {

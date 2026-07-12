@@ -1,6 +1,7 @@
+import { useCallback } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { AppText } from '@/components/AppText';
 import { CallCard } from '@/components/CallCard';
@@ -9,6 +10,7 @@ import { Icon, type IconName } from '@/components/Icon';
 import { IconCircle } from '@/components/IconCircle';
 import { useTheme } from '@/core/theme/theme';
 import { riskLevelFromScore } from '@/core/utils/riskLevel';
+import { callSource } from '@/data/services/callsApi';
 import { useCallStore } from '@/state/callStore';
 import { useSettingsStore } from '@/state/settingsStore';
 
@@ -49,17 +51,25 @@ function EntryCard({
 export default function Home() {
   const { colors } = useTheme();
   const router = useRouter();
-  const results = useCallStore((s) => s.results);
+  const calls = useCallStore((s) => s.calls);
+  const fetchCalls = useCallStore((s) => s.fetchCalls);
   const dangerThreshold = useSettingsStore((s) => s.dangerThreshold);
 
+  // 홈에 돌아올 때마다 최신 히스토리 반영
+  useFocusEffect(
+    useCallback(() => {
+      void fetchCalls();
+    }, [fetchCalls]),
+  );
+
   const now = new Date();
-  const monthDanger = results.filter((r) => {
-    const d = new Date(r.createdAt);
+  const monthDanger = calls.filter((c) => {
+    const d = new Date(c.called_at);
     const sameMonth = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
-    return sameMonth && riskLevelFromScore(r.finalScore, dangerThreshold) !== 'safe';
+    return sameMonth && riskLevelFromScore(c.risk_score, dangerThreshold) !== 'safe';
   }).length;
 
-  const recent = results.slice(0, 3);
+  const recent = calls.slice(0, 3);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -144,12 +154,15 @@ export default function Home() {
             </AppText>
           </Card>
         ) : (
-          recent.map((r) => (
+          recent.map((c) => (
             <CallCard
-              key={r.id}
-              result={r}
+              key={c.id}
+              category={c.phishing_type || '분석 결과'}
+              score={c.risk_score}
+              source={callSource(c.file_type)}
+              createdAt={c.called_at}
               showMeta={false}
-              onPress={() => router.push(`/result?id=${r.id}`)}
+              onPress={() => router.push(`/result?id=${c.id}`)}
             />
           ))
         )}

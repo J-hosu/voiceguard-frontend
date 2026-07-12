@@ -15,8 +15,12 @@ import { analyze } from './analyzer';
  */
 export interface AnalyzeConnection {
   onEvent(cb: (e: AnalysisEvent) => void): void;
-  start(name: string): void;
+  /** 통화 시작. audio:true면 오디오(실시간 스트리밍) 세션으로 시작한다. */
+  start(name: string, opts?: { audio?: boolean }): void;
+  /** 텍스트 발화 전송 (네이티브 온디바이스 STT 경로) */
   sendMessage(role: string, content: string, turnIndex: number): void;
+  /** 오디오 청크 전송 (웹 실시간: WAV base64) */
+  sendAudioChunk(base64: string, chunkIndex: number): void;
   close(): void;
 }
 
@@ -35,7 +39,7 @@ class MockAnalyzeConnection implements AnalyzeConnection {
     if (!this.closed) this.cb?.(e);
   }
 
-  start(name: string) {
+  start(name: string, _opts?: { audio?: boolean }) {
     const now = new Date().toISOString();
     const call: CallLog = {
       id: this.logId,
@@ -90,6 +94,9 @@ class MockAnalyzeConnection implements AnalyzeConnection {
     }, 180);
   }
 
+  // 목은 오디오 전사 능력이 없으므로 청크는 무시한다(실제 백엔드에서만 동작).
+  sendAudioChunk(_base64: string, _chunkIndex: number) {}
+
   close() {
     this.closed = true;
     this.cb = null;
@@ -132,12 +139,22 @@ class RealAnalyzeConnection implements AnalyzeConnection {
     this.cb = cb;
   }
 
-  start(name: string) {
-    this.send({ type: 'start', device_id: DEVICE_ID, name });
+  start(name: string, opts?: { audio?: boolean }) {
+    if (opts?.audio) {
+      // 오디오(실시간 스트리밍) 세션: 이후 audio_chunk(WAV) 프레임을 전송한다.
+      this.send({ type: 'start', device_id: DEVICE_ID, name, file_type: 'realtime', audio_format: 'wav' });
+    } else {
+      this.send({ type: 'start', device_id: DEVICE_ID, name });
+    }
   }
 
   sendMessage(role: string, content: string, turnIndex: number) {
     this.send({ type: 'message', role, content, turn_index: turnIndex });
+  }
+
+  sendAudioChunk(base64: string, chunkIndex: number) {
+    // API_SPEC 7: base64 JSON 방식(chunk_index로 응답 상관관계 추적 용이).
+    this.send({ type: 'audio_chunk', chunk_index: chunkIndex, audio_format: 'wav', audio_base64: base64 });
   }
 
   close() {

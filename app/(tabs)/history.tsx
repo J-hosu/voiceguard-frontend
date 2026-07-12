@@ -1,12 +1,13 @@
-import { useState } from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { AppText } from '@/components/AppText';
 import { CallCard } from '@/components/CallCard';
 import { Card } from '@/components/Card';
 import { useTheme } from '@/core/theme/theme';
 import { riskColorText, riskColorFaint, riskLevelFromScore, type RiskLevel } from '@/core/utils/riskLevel';
+import { callSource } from '@/data/services/callsApi';
 import { useCallStore } from '@/state/callStore';
 import { useSettingsStore } from '@/state/settingsStore';
 
@@ -15,13 +16,23 @@ type Filter = 'all' | RiskLevel;
 export default function History() {
   const { colors } = useTheme();
   const router = useRouter();
-  const results = useCallStore((s) => s.results);
+  const calls = useCallStore((s) => s.calls);
+  const loading = useCallStore((s) => s.loading);
+  const error = useCallStore((s) => s.error);
+  const fetchCalls = useCallStore((s) => s.fetchCalls);
   const dangerThreshold = useSettingsStore((s) => s.dangerThreshold);
   const [filter, setFilter] = useState<Filter>('all');
 
-  const withLevel = results.map((r) => ({
-    r,
-    level: riskLevelFromScore(r.finalScore, dangerThreshold),
+  // 탭에 진입할 때마다 백엔드에서 최신 히스토리를 다시 받아온다.
+  useFocusEffect(
+    useCallback(() => {
+      void fetchCalls();
+    }, [fetchCalls]),
+  );
+
+  const withLevel = calls.map((c) => ({
+    c,
+    level: riskLevelFromScore(c.risk_score, dangerThreshold),
   }));
   const counts = {
     danger: withLevel.filter((x) => x.level === 'danger').length,
@@ -90,15 +101,37 @@ export default function History() {
             </Pressable>
           ) : null}
 
-          {shown.length === 0 ? (
+          {error && calls.length === 0 ? (
+            <Card>
+              <AppText color={colors.danger} style={{ fontSize: 13, textAlign: 'center', lineHeight: 20 }}>
+                히스토리를 불러오지 못했습니다.{'\n'}{error}
+              </AppText>
+              <Pressable onPress={() => void fetchCalls()} style={{ marginTop: 10 }}>
+                <AppText weight="700" color={colors.primary} style={{ fontSize: 14, textAlign: 'center' }}>
+                  다시 시도
+                </AppText>
+              </Pressable>
+            </Card>
+          ) : loading && calls.length === 0 ? (
+            <View style={{ paddingVertical: 40, alignItems: 'center' }}>
+              <ActivityIndicator color={colors.primary} />
+            </View>
+          ) : shown.length === 0 ? (
             <Card>
               <AppText color={colors.textMuted} style={{ fontSize: 13, textAlign: 'center' }}>
                 해당하는 통화 내역이 없습니다.
               </AppText>
             </Card>
           ) : (
-            shown.map(({ r }) => (
-              <CallCard key={r.id} result={r} onPress={() => router.push(`/result?id=${r.id}`)} />
+            shown.map(({ c }) => (
+              <CallCard
+                key={c.id}
+                category={c.phishing_type || '분석 결과'}
+                score={c.risk_score}
+                source={callSource(c.file_type)}
+                createdAt={c.called_at}
+                onPress={() => router.push(`/result?id=${c.id}`)}
+              />
             ))
           )}
         </ScrollView>

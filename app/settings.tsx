@@ -58,7 +58,7 @@ export default function Settings() {
   const { colors } = useTheme();
   const { themeMode, largeText, dangerThreshold, setThemeMode, setLargeText, setDangerThreshold } =
     useSettingsStore();
-  const clearSaved = useCallStore((s) => s.clearSaved);
+  const fetchCalls = useCallStore((s) => s.fetchCalls);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -132,14 +132,14 @@ export default function Settings() {
 
           <Pressable
             onPress={() =>
-              Alert.alert('히스토리 초기화', '저장한 통화 기록을 모두 삭제할까요? (목데이터는 유지)', [
+              Alert.alert('히스토리 새로고침', '백엔드에서 통화 기록을 다시 불러옵니다.', [
                 { text: '취소', style: 'cancel' },
-                { text: '삭제', style: 'destructive', onPress: () => clearSaved() },
+                { text: '새로고침', onPress: () => void fetchCalls() },
               ])
             }
           >
-            <AppText weight="600" color={colors.danger} style={{ fontSize: 14, textAlign: 'center' }}>
-              저장한 히스토리 초기화
+            <AppText weight="600" color={colors.primary} style={{ fontSize: 14, textAlign: 'center' }}>
+              히스토리 새로고침
             </AppText>
           </Pressable>
         </ScrollView>

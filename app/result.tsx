@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Pressable, ScrollView, Share, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, Share, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -10,7 +10,8 @@ import { Icon } from '@/components/Icon';
 import { IconCircle } from '@/components/IconCircle';
 import { KeywordChip } from '@/components/KeywordChip';
 import { useTheme } from '@/core/theme/theme';
-import { formatRelativeDate, formatDuration } from '@/core/utils/format';
+import { extractKeywords } from '@/core/utils/keywords';
+import { formatRelativeDate } from '@/core/utils/format';
 import {
   riskColor,
   riskColorFaint,
@@ -19,28 +20,120 @@ import {
   toPercent,
 } from '@/core/utils/riskLevel';
 import { evidenceBullets, recommendedAction } from '@/data/mock/infoContent';
+import { fetchCallDetail, type CallDetail } from '@/data/services/callsApi';
+import type { TranscriptTurn } from '@/data/models/types';
 import { useCallStore } from '@/state/callStore';
 import { useSettingsStore } from '@/state/settingsStore';
-import type { CallResult } from '@/data/models/types';
+import { useTranscriptStore } from '@/state/transcriptStore';
 
 type Tab = 'summary' | 'chat' | 'evidence';
+
+/** 백엔드 목록 항목 + 상세를 합친 결과 화면 뷰모델 */
+interface ResultView {
+  category: string; // phishing_type
+  score: number; // 0..1 (목록 risk_score)
+  matchedPatterns: string[];
+  coreEvidence: string;
+  createdAt: string;
+}
 
 export default function Result() {
   const { colors } = useTheme();
   const router = useRouter();
-  const params = useLocalSearchParams<{ id?: string }>();
-  const getResult = useCallStore((s) => s.getResult);
+  const params = useLocalSearchParams<{ id?: string; score?: string; tab?: string }>();
+  const id = Number(params.id);
+  const initialTab: Tab = params.tab === 'chat' || params.tab === 'evidence' ? params.tab : 'summary';
+  // 분석 직후엔 목록 재조회 전이라 point가 없을 수 있어, 넘어온 score를 초기값으로 사용.
+  const paramScore = Number(params.score);
+
+  const calls = useCallStore((s) => s.calls);
+  const loaded = useCallStore((s) => s.loaded);
+  const fetchCalls = useCallStore((s) => s.fetchCalls);
   const dangerThreshold = useSettingsStore((s) => s.dangerThreshold);
-  const [tab, setTab] = useState<Tab>('summary');
+  // 통화별 전사(로컬 저장). 통화 종료 시 realtime에서 logId별로 저장한 대화 전문.
+  const hydrateTranscripts = useTranscriptStore((s) => s.hydrate);
+  const transcriptTurns = useTranscriptStore((s) => (Number.isFinite(id) ? s.byLog[id] : undefined)) ?? [];
 
-  const result = getResult(Number(params.id));
+  const [tab, setTab] = useState<Tab>(initialTab);
+  const [detail, setDetail] = useState<CallDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  if (!result) {
+  // 목록이 아직 없으면 백엔드에서 받아온다(딥링크/새로고침 대비).
+  useEffect(() => {
+    if (!loaded) void fetchCalls();
+  }, [loaded, fetchCalls]);
+
+  // 로컬 전사 저장분 로드(앱 재시작/딥링크 대비. 같은 세션이면 이미 메모리에 있음).
+  useEffect(() => {
+    void hydrateTranscripts();
+  }, [hydrateTranscripts]);
+
+  // 상세(근거) 조회
+  useEffect(() => {
+    let alive = true;
+    if (!Number.isFinite(id)) {
+      setError('잘못된 통화 ID입니다.');
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    fetchCallDetail(id)
+      .then((d) => {
+        if (alive) setDetail(d);
+      })
+      .catch((e) => {
+        if (alive) setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+
+  const listItem = calls.find((c) => c.id === id);
+
+  const view: ResultView = {
+    category: detail?.phishing_type || listItem?.phishing_type || '분석 결과',
+    score: listItem?.risk_score ?? (Number.isFinite(paramScore) ? paramScore : 0),
+    matchedPatterns: detail?.matched_patterns ?? [],
+    coreEvidence: detail?.core_evidence ?? '',
+    createdAt: listItem?.called_at ?? '',
+  };
+
+  const level = riskLevelFromScore(view.score, dangerThreshold);
+  const headerColor = riskColor(level, colors);
+  const isRisk = level !== 'safe';
+
+  const onShare = () => {
+    void Share.share({
+      message:
+        `[VoiceGuard 분석 결과]\n` +
+        `유형: ${view.category}\n` +
+        `위험도: ${toPercent(view.score)}% (${riskLabel(level)})\n` +
+        `근거: ${view.coreEvidence}\n` +
+        `일시: ${formatRelativeDate(view.createdAt)}`,
+    });
+  };
+
+  if (loading && !detail) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' }}>
+        <SafeAreaView edges={['top']} />
+        <ActivityIndicator color={colors.primary} />
+      </View>
+    );
+  }
+
+  if (error && !detail) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
         <SafeAreaView edges={['top']} />
-        <AppText color={colors.textMuted} style={{ fontSize: 14, textAlign: 'center' }}>
-          통화 상세를 찾을 수 없습니다.{'\n'}(앱 재시작 후에는 목데이터/저장된 기록만 열람 가능)
+        <AppText color={colors.danger} style={{ fontSize: 14, textAlign: 'center', lineHeight: 21 }}>
+          통화 상세를 불러오지 못했습니다.{'\n'}{error}
         </AppText>
         <Pressable onPress={() => router.replace('/')} style={{ marginTop: 16 }}>
           <AppText weight="700" color={colors.primary} style={{ fontSize: 15 }}>
@@ -50,22 +143,6 @@ export default function Result() {
       </View>
     );
   }
-
-  const level = riskLevelFromScore(result.finalScore, dangerThreshold);
-  const headerColor = riskColor(level, colors);
-  const isRisk = level !== 'safe';
-
-  const onShare = () => {
-    void Share.share({
-      message:
-        `[VoiceGuard 분석 결과]\n` +
-        `유형: ${result.category}\n` +
-        `위험도: ${toPercent(result.finalScore)}% (${riskLabel(level)})\n` +
-        `근거: ${result.coreEvidence}\n` +
-        `키워드: ${result.keywords.join(', ') || '없음'}\n` +
-        `일시: ${formatRelativeDate(result.createdAt)}`,
-    });
-  };
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -94,10 +171,10 @@ export default function Result() {
               </AppText>
             </View>
             <AppText weight="800" color="#FFFFFF" style={{ fontSize: 54, letterSpacing: -1, marginTop: 2 }}>
-              {toPercent(result.finalScore)}%
+              {toPercent(view.score)}%
             </AppText>
             <AppText weight="700" color="#FFFFFF" style={{ fontSize: 15, marginTop: 2 }}>
-              {result.category}
+              {view.category}
             </AppText>
           </View>
         </SafeAreaView>
@@ -134,18 +211,18 @@ export default function Result() {
             })}
           </View>
 
-          {tab === 'summary' ? <SummaryTab result={result} isRisk={isRisk} /> : null}
-          {tab === 'chat' ? <ChatTab result={result} /> : null}
-          {tab === 'evidence' ? <EvidenceTab result={result} level={level} /> : null}
+          {tab === 'summary' ? <SummaryTab view={view} isRisk={isRisk} /> : null}
+          {tab === 'chat' ? <ChatTab turns={transcriptTurns} /> : null}
+          {tab === 'evidence' ? <EvidenceTab view={view} level={level} /> : null}
         </Card>
       </ScrollView>
     </View>
   );
 }
 
-function SummaryTab({ result, isRisk }: { result: CallResult; isRisk: boolean }) {
+function SummaryTab({ view, isRisk }: { view: ResultView; isRisk: boolean }) {
   const { colors } = useTheme();
-  const bullets = isRisk ? evidenceBullets(result.matchedPatterns) : [];
+  const bullets = isRisk ? evidenceBullets(view.matchedPatterns) : [];
 
   return (
     <View style={{ gap: 15 }}>
@@ -164,7 +241,7 @@ function SummaryTab({ result, isRisk }: { result: CallResult; isRisk: boolean })
               </View>
             ))}
             <AppText color={colors.textSecondary} style={{ fontSize: 13, lineHeight: 20, marginTop: 2 }}>
-              {result.coreEvidence}
+              {view.coreEvidence || '분석된 위험 근거가 없습니다.'}
             </AppText>
           </View>
         ) : (
@@ -186,7 +263,7 @@ function SummaryTab({ result, isRisk }: { result: CallResult; isRisk: boolean })
         </View>
         <AppText weight="500" color={colors.primary} style={{ fontSize: 13, lineHeight: 20 }}>
           {isRisk
-            ? recommendedAction(result.category)
+            ? recommendedAction(view.category)
             : '정상적인 통화로 보입니다. 다만 개인정보·인증번호 요구에는 항상 주의하세요.'}
         </AppText>
       </View>
@@ -194,51 +271,81 @@ function SummaryTab({ result, isRisk }: { result: CallResult; isRisk: boolean })
   );
 }
 
-function ChatTab({ result }: { result: CallResult }) {
+/**
+ * 대화 내용(전사) 탭.
+ * 백엔드 상세(GET /calls/{id})는 전사를 반환하지 않으므로(발화 조회 API 부재),
+ * 통화 종료 시 로컬에 저장해둔 전사(turns)를 화자별로 표시한다.
+ * 저장분이 없으면(예: 이전 버전에서 만든 통화, 다른 기기) 안내문을 보여준다.
+ */
+function ChatTab({ turns }: { turns: TranscriptTurn[] }) {
   const { colors } = useTheme();
-  return (
-    <View style={{ gap: 14 }}>
-      {result.turns.length === 0 ? (
-        <AppText color={colors.textMuted} style={{ fontSize: 13, textAlign: 'center' }}>
-          저장된 대화 내용이 없습니다.
+
+  if (turns.length === 0) {
+    return (
+      <View style={{ alignItems: 'center', paddingVertical: 26, gap: 8 }}>
+        <IconCircle name="file" color={colors.textMuted} bg={colors.cardAlt} size={44} radius={12} iconSize={22} />
+        <AppText weight="700" color={colors.textSecondary} style={{ fontSize: 14 }}>
+          저장된 대화 내용이 없습니다
         </AppText>
-      ) : (
-        result.turns.map((t) => (
-          <View key={t.turnIndex} style={{ alignItems: t.isMine ? 'flex-end' : 'flex-start' }}>
-            <AppText color={colors.textMuted} style={{ fontSize: 11, marginBottom: 5 }}>
-              {t.isMine ? '나' : '상대방'} · {formatDuration(t.atSec)}
+        <AppText color={colors.textMuted} style={{ fontSize: 12.5, textAlign: 'center', lineHeight: 19 }}>
+          대화 전문은 이 기기에서 진행한 통화에만 저장됩니다.{'\n'}(백엔드에는 위험도·탐지 근거만 보관)
+        </AppText>
+      </View>
+    );
+  }
+
+  // 백엔드 화자A/B → 상대방/나로 표시(좌=상대방, 우=나).
+  // ※ 단일 마이크라 실제 '나'를 음성으로 식별할 수 없어, 백엔드 등장순 라벨(화자A=먼저 말한 사람)을
+  //   상대방, 화자B를 나로 두는 근사 매핑이다. 청크마다 라벨이 바뀔 수 있어 완벽하지 않다.
+  const meta = (t: TranscriptTurn) => {
+    if (t.role?.startsWith('화자')) {
+      const isMe = t.role === '화자B';
+      return { isRight: isMe, label: isMe ? '나' : '상대방' };
+    }
+    return { isRight: t.isMine, label: t.isMine ? '나' : '상대방' };
+  };
+
+  return (
+    <View style={{ gap: 12 }}>
+      {turns.map((t) => {
+        const { isRight, label } = meta(t);
+        return (
+          <View key={t.turnIndex} style={{ alignItems: isRight ? 'flex-end' : 'flex-start' }}>
+            <AppText color={colors.textMuted} style={{ fontSize: 11, marginBottom: 4 }}>
+              {label}
             </AppText>
             <View
               style={{
                 maxWidth: '82%',
-                backgroundColor: t.isMine ? colors.primary : colors.cardAlt,
+                backgroundColor: isRight ? colors.primaryFaint : colors.cardAlt,
                 paddingHorizontal: 13,
-                paddingVertical: 11,
+                paddingVertical: 10,
                 borderRadius: 14,
-                borderTopRightRadius: t.isMine ? 4 : 14,
-                borderTopLeftRadius: t.isMine ? 14 : 4,
+                borderTopRightRadius: isRight ? 4 : 14,
+                borderTopLeftRadius: isRight ? 14 : 4,
               }}
             >
               <HighlightedText
                 text={t.content}
                 keywords={t.keywords ?? []}
-                baseColor={t.isMine ? '#FFFFFF' : colors.text}
-                highlightColor={colors.warningText}
-                highlightBg={colors.warningFaint}
-                style={{ fontSize: 13.5, lineHeight: 20 }}
+                baseColor={colors.text}
+                highlightColor={colors.primary}
+                weightHighlight="700"
+                style={{ fontSize: 14, lineHeight: 21 }}
               />
             </View>
           </View>
-        ))
-      )}
+        );
+      })}
     </View>
   );
 }
 
-function EvidenceTab({ result, level }: { result: CallResult; level: 'safe' | 'warning' | 'danger' }) {
+function EvidenceTab({ view, level }: { view: ResultView; level: 'safe' | 'warning' | 'danger' }) {
   const { colors } = useTheme();
   const main = riskColor(level, colors);
-  const sentences = result.turns.filter((t) => !t.isMine && (t.keywords?.length ?? 0) > 0);
+  // 백엔드는 단어 위치를 주지 않으므로 핵심근거 문장에서 키워드를 근사 추출.
+  const keywords = extractKeywords(view.coreEvidence, 6);
 
   return (
     <View style={{ gap: 22 }}>
@@ -260,7 +367,7 @@ function EvidenceTab({ result, level }: { result: CallResult; level: 'safe' | 'w
           }}
         >
           <AppText weight="700" style={{ fontSize: 15, lineHeight: 22, flex: 1 }}>
-            해당 통화는{'\n'}"{result.category}"으로{'\n'}의심됩니다
+            해당 통화는{'\n'}"{view.category}"으로{'\n'}의심됩니다
           </AppText>
           <View
             style={{
@@ -276,45 +383,55 @@ function EvidenceTab({ result, level }: { result: CallResult; level: 'safe' | 'w
               {riskLabel(level)}
             </AppText>
             <AppText weight="800" color="#FFFFFF" style={{ fontSize: 22 }}>
-              {toPercent(result.finalScore)}
+              {toPercent(view.score)}
             </AppText>
           </View>
         </View>
       </View>
 
-      {/* 의심되는 주요 단어 */}
-      {result.keywords.length > 0 ? (
+      {/* 탐지된 패턴 */}
+      {view.matchedPatterns.length > 0 ? (
+        <View>
+          <AppText weight="800" style={{ fontSize: 18 }}>
+            탐지된 위험 패턴
+          </AppText>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 14 }}>
+            {view.matchedPatterns.map((p) => (
+              <KeywordChip key={p} text={p} />
+            ))}
+          </View>
+        </View>
+      ) : null}
+
+      {/* 의심되는 주요 단어 (근거 문장에서 근사) */}
+      {keywords.length > 0 ? (
         <View>
           <AppText weight="800" style={{ fontSize: 18 }}>
             의심되는 주요 단어
           </AppText>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 14 }}>
-            {result.keywords.map((k) => (
+            {keywords.map((k) => (
               <KeywordChip key={k} text={k} />
             ))}
           </View>
         </View>
       ) : null}
 
-      {/* 주요 단어를 사용한 문장 */}
-      {sentences.length > 0 ? (
+      {/* 핵심 근거 문장 */}
+      {view.coreEvidence ? (
         <View>
           <AppText weight="800" style={{ fontSize: 18 }}>
-            주요 단어를 사용한 문장
+            핵심 근거
           </AppText>
-          <View style={{ gap: 10, marginTop: 14 }}>
-            {sentences.map((t) => (
-              <View key={t.turnIndex} style={{ backgroundColor: colors.cardAlt, borderRadius: 16, padding: 16 }}>
-                <HighlightedText
-                  text={t.content}
-                  keywords={t.keywords ?? []}
-                  baseColor={colors.textSecondary}
-                  highlightColor={colors.text}
-                  weightHighlight="700"
-                  style={{ fontSize: 14, lineHeight: 24 }}
-                />
-              </View>
-            ))}
+          <View style={{ backgroundColor: colors.cardAlt, borderRadius: 16, padding: 16, marginTop: 14 }}>
+            <HighlightedText
+              text={view.coreEvidence}
+              keywords={keywords}
+              baseColor={colors.textSecondary}
+              highlightColor={colors.text}
+              weightHighlight="700"
+              style={{ fontSize: 14, lineHeight: 24 }}
+            />
           </View>
         </View>
       ) : null}

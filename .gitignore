@@ -46,6 +46,9 @@ yarn-error.*
 !.env.example
 *.pem
 
-# 기획/설계 문서 — 앱·웹 구현 코드만 저장소에 올림 (문서는 로컬/memo에 보관)
+# 앱·웹 구현 코드만 저장소에 올림 — 문서(*.md)·기획자료·목서버 등 비구현 항목은 제외
+*.md
 md-files/
+mock-backend/
 scratch_*
+dist/

@@ -1,23 +1,35 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { Platform, Pressable, ScrollView, Vibration, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Platform, Pressable, ScrollView, Vibration, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as Haptics from 'expo-haptics';
 import { AppText } from '@/components/AppText';
 import { HighlightedText } from '@/components/HighlightedText';
-import { Icon, type IconName } from '@/components/Icon';
-import { RiskGauge } from '@/components/RiskGauge';
-import { fixedColors } from '@/core/theme/colors';
-import { formatDuration } from '@/core/utils/format';
+import { Icon } from '@/components/Icon';
+import {
+  AiNode,
+  BlinkDot,
+  ChatGlyph,
+  FileGlyph,
+  GuideGlyph,
+  MicOrb,
+  ScoreGauge,
+  ShieldGlyph,
+  SparkleGlyph,
+  StopGlyph,
+  rgba,
+} from '@/components/realtimeAnalysis';
 import { categorizeType } from '@/core/utils/keywords';
-import { riskHeadline, type RiskLevel } from '@/core/utils/riskLevel';
+import { type RiskLevel } from '@/core/utils/riskLevel';
 import { USE_MOCK_STT } from '@/core/config/env';
+import { evidenceBullets } from '@/data/mock/infoContent';
 import { getScenario, type Scenario } from '@/data/mock/mockScenarios';
 import { useCallSession } from '@/hooks/useCallSession';
 import { useCallStore } from '@/state/callStore';
+import { useTranscriptStore } from '@/state/transcriptStore';
 
-/** 실사용(실기기 STT) 라이브 세션: 대본 turns 없이 시작하는 통화. */
+/** 실사용(실기기/웹 STT) 라이브 세션: 대본 turns 없이 시작하는 통화. */
 const LIVE_SCENARIO: Scenario = {
   id: 'live',
   title: '실시간 통화',
@@ -26,49 +38,53 @@ const LIVE_SCENARIO: Scenario = {
   turns: [],
 };
 
-const LEVEL_COLOR: Record<RiskLevel, string> = {
-  safe: '#34C77B',
-  warning: fixedColors.amber,
-  danger: fixedColors.rec,
+// 위험 수준별 색상/문구 (디자인: 주의=amber 기준, 안전=green, 높음=red)
+const LEVEL_UI: Record<RiskLevel, { color: string; text: string; sub: string; desc: string }> = {
+  safe: { color: '#34d399', text: '안전', sub: '안전', desc: '현재까지 위험 징후가 없습니다.' },
+  warning: { color: '#f6a623', text: '주의', sub: '주의 필요', desc: '의심 징후가 탐지되었습니다. 주의가 필요합니다.' },
+  danger: { color: '#ef4444', text: '높음', sub: '위험', desc: '보이스피싱 위험이 매우 높습니다. 통화 종료를 권장합니다.' },
 };
 
-function CallActionButton({ icon, label }: { icon: IconName; label: string }) {
+const BULLET_COLORS = ['#f87171', '#fbbf24', '#4ade80'];
+
+/** 섹션 카드(공통 테두리/배경) */
+function Card({ children }: { children: React.ReactNode }) {
   return (
-    <View style={{ alignItems: 'center', gap: 8, width: '33.3%', marginBottom: 20 }}>
-      <View
-        style={{
-          width: 58,
-          height: 58,
-          borderRadius: 29,
-          backgroundColor: 'rgba(255,255,255,0.09)',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <Icon name={icon} size={23} color="#DFE5EE" />
-      </View>
-      <AppText color="#B3BCC9" style={{ fontSize: 12 }}>
-        {label}
-      </AppText>
+    <View
+      style={{
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.07)',
+        borderRadius: 18,
+        backgroundColor: 'rgba(255,255,255,0.02)',
+        padding: 15,
+        marginBottom: 16,
+      }}
+    >
+      {children}
     </View>
   );
 }
 
 export default function Realtime() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ scenario?: string; view?: string }>();
+  const params = useLocalSearchParams<{ scenario?: string }>();
   // scenario 파라미터가 있으면 데모 시나리오, 없으면 실사용 라이브 세션.
-  // (데모 STT 모드에서는 파라미터 없을 때 기본 시나리오로 폴백)
-  const scenario = useMemo(
-    () => (params.scenario ? getScenario(params.scenario) : USE_MOCK_STT ? getScenario(null) : LIVE_SCENARIO),
-    [params.scenario],
-  );
-  const addResult = useCallStore((s) => s.addResult);
-  const scrollRef = useRef<ScrollView>(null);
-  const view = params.view === 'chat' ? 'chat' : 'call';
+  const scenario: Scenario = params.scenario
+    ? getScenario(params.scenario)
+    : USE_MOCK_STT
+      ? getScenario(null)
+      : LIVE_SCENARIO;
 
-  const { state, start, stop, buildResult } = useCallSession(scenario, {
+  const fetchCalls = useCallStore((s) => s.fetchCalls);
+  const saveTranscript = useTranscriptStore((s) => s.save);
+
+  // 종료 마무리(마지막 발화 전사 대기) 상태
+  const [finishing, setFinishing] = useState(false);
+  const finishingRef = useRef(false);
+
+  const { state, start, finish } = useCallSession(scenario, {
     onDangerCross: (s) => {
+      if (finishingRef.current) return; // 종료 마무리 중엔 경고 화면으로 튀지 않음
       if (Platform.OS !== 'web') {
         Vibration.vibrate([0, 400, 200, 400]);
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
@@ -89,269 +105,314 @@ export default function Realtime() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    scrollRef.current?.scrollToEnd({ animated: true });
-  }, [state.turns.length]);
+  const ui = LEVEL_UI[state.level];
+  const score100 = Math.round(state.score * 100);
+  const keywords = Array.from(new Set(state.turns.flatMap((t) => t.keywords ?? [])));
+  const recentSet = new Set(state.turns.slice(-2).flatMap((t) => t.keywords ?? []));
+  const lastTurn = state.turns[state.turns.length - 1];
+  const liveText = lastTurn?.content ?? '';
+  const bullets = evidenceBullets(state.matchedPatterns).slice(0, 3);
 
-  const levelColor = LEVEL_COLOR[state.level];
-  const fullText = state.turns.map((t) => t.content).join(' ');
-  const type = categorizeType(state.matchedPatterns, fullText);
-  const keywordCount = new Set(state.turns.flatMap((t) => t.keywords ?? [])).size;
-  const recentKeywords = Array.from(new Set(state.turns.flatMap((t) => t.keywords ?? []))).slice(-3);
-
-  const endCall = () => {
-    stop();
-    const id = Math.floor(Date.now());
-    const result = buildResult(id);
-    addResult(result);
-    router.replace(`/result?id=${id}`);
+  // 세션 종료 → (마지막 발화 전사 대기) → 전사 로컬 저장 → 결과 화면. tab='chat'이면 대화 내용 탭으로.
+  const endSession = async (tab?: 'chat') => {
+    if (finishingRef.current) return;
+    finishingRef.current = true;
+    setFinishing(true);
+    const final = await finish(); // 남은 오디오 flush + 마지막 전사 수신 후의 최종 state
+    if (final.logId) saveTranscript(final.logId, final.turns);
+    void fetchCalls();
+    if (final.logId) router.replace(`/result?id=${final.logId}&score=${final.score}${tab ? `&tab=${tab}` : ''}`);
+    else router.replace('/');
   };
 
-  const switchView = (v: 'call' | 'chat') =>
-    router.setParams({ view: v, scenario: scenario.id });
-
   return (
-    <View style={{ flex: 1, backgroundColor: view === 'chat' ? fixedColors.callBgChat : fixedColors.callBg }}>
+    <View style={{ flex: 1, backgroundColor: '#05070d' }}>
       <StatusBar style="light" />
       <SafeAreaView edges={['top', 'bottom']} style={{ flex: 1 }}>
-        {/* 상단 뷰 전환 */}
-        <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 8, gap: 10 }}>
-          <Pressable hitSlop={10} onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}>
+        {/* 상단 바: ‹ 종료 */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 8 }}>
+          <Pressable hitSlop={10} onPress={() => endSession()} accessibilityLabel="분석 종료">
             <Icon name="chevron-left" size={26} color="#E8ECF2" />
           </Pressable>
-          <View style={{ flex: 1 }} />
-          <View style={{ flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 20, padding: 3 }}>
-            {(['call', 'chat'] as const).map((v) => (
-              <Pressable
-                key={v}
-                onPress={() => switchView(v)}
-                style={{
-                  paddingHorizontal: 14,
-                  paddingVertical: 6,
-                  borderRadius: 18,
-                  backgroundColor: view === v ? 'rgba(255,255,255,0.16)' : 'transparent',
-                }}
-              >
-                <AppText weight="700" color={view === v ? '#FFFFFF' : '#8A96A6'} style={{ fontSize: 12.5 }}>
-                  {v === 'call' ? '통화 화면' : '대화 내용'}
-                </AppText>
-              </Pressable>
-            ))}
-          </View>
         </View>
 
-        {view === 'call' ? (
-          <>
-            {/* 발신자 */}
-            <View style={{ alignItems: 'center', paddingTop: 18 }}>
-              <View
-                style={{
-                  width: 88,
-                  height: 88,
-                  borderRadius: 44,
-                  backgroundColor: '#2B3543',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginBottom: 14,
-                }}
-              >
-                <Icon name="user" size={40} color="#8A96A6" />
-              </View>
-              <AppText color="#9AA5B3" style={{ fontSize: 14 }}>
-                알 수 없음
-              </AppText>
-              <AppText weight="800" color="#FFFFFF" style={{ fontSize: 27, marginTop: 5 }}>
-                {scenario.phone}
-              </AppText>
-              <AppText color={fixedColors.callTextSub} style={{ fontSize: 13, marginTop: 6 }}>
-                {formatDuration(state.elapsedSec)}
-              </AppText>
-            </View>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 24 }} showsVerticalScrollIndicator={false}>
+          {/* 헤더 로고 */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9, paddingTop: 4, paddingBottom: 2 }}>
+            <ShieldGlyph size={24} />
+            <AppText weight="700" color="#eef2f9" style={{ fontSize: 17, letterSpacing: 0.2 }}>
+              VoiceGuard AI
+            </AppText>
+          </View>
 
-            {/* VoiceGuard 검사 오버레이 배지 */}
+          {/* 타이틀 */}
+          <AppText weight="800" color="#f6f8fc" style={{ fontSize: 32, textAlign: 'center', marginTop: 14, marginBottom: 20, letterSpacing: -0.5 }}>
+            실시간 청취 분석
+          </AppText>
+
+          {/* 마이크 오브 */}
+          <MicOrb color={ui.color} label="청취 중" />
+
+          {/* LIVE 상태 pill */}
+          <View style={{ alignItems: 'center', marginBottom: 18 }}>
             <View
               style={{
-                marginHorizontal: 24,
-                marginTop: 18,
-                backgroundColor: fixedColors.callCard,
-                borderWidth: 1.5,
-                borderColor: levelColor,
-                borderRadius: 16,
-                padding: 15,
                 flexDirection: 'row',
                 alignItems: 'center',
-                gap: 14,
+                gap: 7,
+                paddingHorizontal: 15,
+                paddingVertical: 7,
+                borderRadius: 999,
+                backgroundColor: 'rgba(255,255,255,0.05)',
+                borderWidth: 1,
+                borderColor: 'rgba(255,255,255,0.09)',
               }}
             >
-              <RiskGauge score={state.score} size={54} color={levelColor} textColor={levelColor} />
-              <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                  <Icon name="shield-check" size={13} color="#AEB8C6" />
-                  <AppText weight="600" color="#AEB8C6" style={{ fontSize: 11, letterSpacing: 0.3 }}>
-                    VOICEGUARD AI 검사
+              <BlinkDot size={7} color="#34d399" />
+              <AppText weight="600" color="#cdd4e0" style={{ fontSize: 13 }}>
+                실시간 분석 중
+              </AppText>
+            </View>
+          </View>
+
+          {/* 위험 점수 카드 */}
+          <View
+            style={{
+              borderWidth: 1.5,
+              borderColor: rgba(ui.color, 0.55),
+              borderRadius: 20,
+              backgroundColor: rgba(ui.color, 0.06),
+              padding: 18,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 18,
+              marginBottom: 16,
+              shadowColor: ui.color,
+              shadowOpacity: 0.3,
+              shadowRadius: 20,
+              shadowOffset: { width: 0, height: 0 },
+            }}
+          >
+            <ScoreGauge score={score100} color={ui.color} sub={ui.sub} />
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                <AppText weight="600" color="#c3cad6" style={{ fontSize: 14 }}>
+                  보이스피싱 위험 점수
+                </AppText>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+                <AppText weight="800" style={{ fontSize: 26, color: ui.color }}>
+                  {ui.text}
+                </AppText>
+                <View style={{ backgroundColor: rgba(ui.color, 0.16), paddingHorizontal: 9, paddingVertical: 3, borderRadius: 7 }}>
+                  <AppText weight="700" style={{ fontSize: 13, color: ui.color }}>
+                    {score100} / 100
                   </AppText>
                 </View>
-                <AppText weight="800" color={levelColor} style={{ fontSize: 16, marginTop: 4 }}>
-                  {state.level === 'safe' ? '분석 중' : `• ${riskHeadline(state.level)}`}
-                </AppText>
-                <AppText
-                  color={state.error ? fixedColors.rec : fixedColors.callTextDim}
-                  style={{ fontSize: 12, marginTop: 3 }}
-                  numberOfLines={1}
-                >
-                  {state.error
-                    ? `연결 오류: ${state.error}`
-                    : recentKeywords.length
-                      ? recentKeywords.join(' · ')
-                      : '위험 신호를 분석하고 있습니다'}
-                </AppText>
               </View>
-            </View>
-
-            <View style={{ flex: 1 }} />
-
-            {/* 통화 액션 그리드 (데모용 장식) */}
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 26 }}>
-              <CallActionButton icon="record" label="녹음" />
-              <CallActionButton icon="video" label="영상통화" />
-              <CallActionButton icon="bluetooth" label="블루투스" />
-              <CallActionButton icon="volume" label="스피커" />
-              <CallActionButton icon="volume-x" label="음소거" />
-              <CallActionButton icon="grid" label="키패드" />
-            </View>
-
-            {/* 종료 버튼 */}
-            <View style={{ alignItems: 'center', paddingVertical: 18 }}>
-              <Pressable
-                onPress={endCall}
-                style={{
-                  width: 66,
-                  height: 66,
-                  borderRadius: 33,
-                  backgroundColor: fixedColors.hangup,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-                accessibilityLabel="통화 종료"
-              >
-                <Icon name="phone-off" size={28} color="#FFFFFF" />
-              </Pressable>
-              <AppText color={fixedColors.callTextDim} style={{ fontSize: 12, marginTop: 8 }}>
-                통화 종료 → 결과 보기
+              <AppText color="#98a1b0" style={{ fontSize: 12.5, lineHeight: 19 }}>
+                {state.error ? `연결 오류: ${state.error}` : ui.desc}
               </AppText>
             </View>
-          </>
-        ) : (
-          <>
-            {/* 대화 헤더 */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, paddingBottom: 12, gap: 10 }}>
-              <View style={{ flex: 1 }}>
-                <AppText weight="800" color="#FFFFFF" style={{ fontSize: 16 }}>
-                  실시간 대화 내용
-                </AppText>
-                <AppText color="#8794A4" style={{ fontSize: 11.5, marginTop: 2 }}>
-                  {scenario.phone} · {formatDuration(state.elapsedSec)} 통화 중
-                </AppText>
-              </View>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: fixedColors.rec }} />
-                <AppText weight="700" color={fixedColors.rec} style={{ fontSize: 12 }}>
-                  REC
-                </AppText>
-              </View>
-            </View>
+          </View>
 
-            {/* 요약 배지 */}
-            <View
-              style={{
-                marginHorizontal: 16,
-                marginBottom: 12,
-                backgroundColor: fixedColors.callCard,
-                borderWidth: 1.5,
-                borderColor: levelColor,
-                borderRadius: 14,
-                padding: 12,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 12,
-              }}
-            >
-              <RiskGauge score={state.score} size={44} color={levelColor} textColor={levelColor} />
-              <View style={{ flex: 1 }}>
-                <AppText weight="800" color="#FFFFFF" style={{ fontSize: 14 }}>
-                  {state.level === 'safe' ? '분석 중' : `${riskHeadline(state.level)} · ${type} 의심`}
-                </AppText>
-                <AppText color={fixedColors.callTextDim} style={{ fontSize: 12, marginTop: 3 }}>
-                  {keywordCount > 0 ? `위험 키워드 ${keywordCount}건이 감지되었습니다` : '실시간으로 대화를 분석 중입니다'}
-                </AppText>
-              </View>
-            </View>
-
-            {/* 채팅 로그 */}
-            <ScrollView
-              ref={scrollRef}
-              style={{ flex: 1 }}
-              contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 12, gap: 14 }}
-              showsVerticalScrollIndicator={false}
-            >
-              {state.turns.map((t) => (
-                <View key={t.turnIndex} style={{ alignItems: t.isMine ? 'flex-end' : 'flex-start' }}>
-                  <AppText color="#8794A4" style={{ fontSize: 11, marginBottom: 5 }}>
-                    {t.isMine ? '나' : '상대방'} · {formatDuration(t.atSec)}
-                  </AppText>
+          {/* 탐지된 주요 키워드 */}
+          <Card>
+            <AppText weight="700" color="#eef2f9" style={{ fontSize: 15, marginBottom: 13 }}>
+              탐지된 주요 키워드
+            </AppText>
+            {keywords.length > 0 ? (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                {keywords.slice(0, 8).map((k) => (
                   <View
+                    key={k}
                     style={{
-                      maxWidth: '80%',
-                      backgroundColor: t.isMine ? '#2563EB' : fixedColors.callBubbleOther,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
                       paddingHorizontal: 13,
-                      paddingVertical: 11,
-                      borderRadius: 14,
-                      borderTopRightRadius: t.isMine ? 4 : 14,
-                      borderTopLeftRadius: t.isMine ? 14 : 4,
+                      paddingVertical: 8,
+                      borderRadius: 10,
+                      backgroundColor: 'rgba(255,255,255,0.05)',
+                      borderWidth: 1,
+                      borderColor: 'rgba(255,255,255,0.08)',
                     }}
                   >
-                    <HighlightedText
-                      text={t.content}
-                      keywords={t.keywords ?? []}
-                      baseColor={t.isMine ? '#FFFFFF' : '#D7DCE3'}
-                      highlightColor={fixedColors.amber}
-                      highlightBg="rgba(245,166,35,0.22)"
-                      style={{ fontSize: 13.5, lineHeight: 20 }}
-                    />
+                    <AppText weight="600" color="#dfe4ee" style={{ fontSize: 13 }}>
+                      {k}
+                    </AppText>
+                    {recentSet.has(k) ? <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#f6a623' }} /> : null}
                   </View>
-                </View>
-              ))}
-            </ScrollView>
-
-            {/* 푸터 */}
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 9,
-                paddingHorizontal: 18,
-                paddingTop: 12,
-                borderTopWidth: 1,
-                borderTopColor: '#2A3442',
-              }}
-            >
-              <Icon name="activity" size={18} color={state.error ? fixedColors.rec : '#2563EB'} />
-              <AppText color={state.error ? fixedColors.rec : '#9AA5B3'} style={{ fontSize: 13, flex: 1 }}>
-                {state.error
-                  ? `연결 오류: ${state.error}`
-                  : state.finished
-                    ? '분석 완료 · 통화 화면에서 종료를 누르세요'
-                    : 'AI가 실시간으로 대화를 분석하고 있습니다...'}
+                ))}
+              </View>
+            ) : (
+              <AppText color="#6f7787" style={{ fontSize: 13 }}>
+                아직 탐지된 키워드가 없습니다.
               </AppText>
-              <Pressable onPress={endCall} hitSlop={8}>
-                <AppText weight="700" color={fixedColors.rec} style={{ fontSize: 13 }}>
-                  종료
+            )}
+          </Card>
+
+          {/* 실시간 음성 텍스트 */}
+          <Card>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 11 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <ChatGlyph size={18} color="#8b93a1" />
+                <AppText weight="700" color="#eef2f9" style={{ fontSize: 15 }}>
+                  실시간 음성 텍스트
                 </AppText>
-              </Pressable>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <BlinkDot size={7} color="#ef4444" period={1300} />
+                <AppText weight="800" color="#ef5350" style={{ fontSize: 12, letterSpacing: 0.5 }}>
+                  LIVE
+                </AppText>
+              </View>
             </View>
-          </>
-        )}
+            {liveText ? (
+              <HighlightedText
+                text={liveText}
+                keywords={lastTurn?.keywords ?? []}
+                baseColor="#cdd4e0"
+                highlightColor="#f6a623"
+                weightHighlight="700"
+                style={{ fontSize: 14.5, lineHeight: 24 }}
+              />
+            ) : (
+              <AppText color="#6f7787" style={{ fontSize: 14, lineHeight: 22 }}>
+                음성을 분석하고 있습니다…
+              </AppText>
+            )}
+          </Card>
+
+          {/* AI 분석 결과 */}
+          <View
+            style={{
+              borderWidth: 1,
+              borderColor: 'rgba(255,255,255,0.07)',
+              borderRadius: 18,
+              backgroundColor: 'rgba(255,255,255,0.02)',
+              padding: 15,
+              marginBottom: 16,
+              position: 'relative',
+              overflow: 'hidden',
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+              <SparkleGlyph size={18} color="#8ab4ff" />
+              <AppText weight="700" color="#eef2f9" style={{ fontSize: 15 }}>
+                AI 분석 결과
+              </AppText>
+            </View>
+            <AiNode />
+            <View style={{ gap: 12, paddingRight: 80 }}>
+              {bullets.length > 0 ? (
+                bullets.map((b, i) => (
+                  <View key={i} style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start' }}>
+                    <View
+                      style={{
+                        marginTop: 6,
+                        width: 8,
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: BULLET_COLORS[i] ?? '#8ab4ff',
+                        shadowColor: BULLET_COLORS[i] ?? '#8ab4ff',
+                        shadowOpacity: 0.6,
+                        shadowRadius: 6,
+                      }}
+                    />
+                    <AppText color="#c9d0dc" style={{ fontSize: 13.5, lineHeight: 20, flex: 1 }}>
+                      {b}
+                    </AppText>
+                  </View>
+                ))
+              ) : (
+                <View style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start' }}>
+                  <View style={{ marginTop: 6, width: 8, height: 8, borderRadius: 4, backgroundColor: '#4ade80' }} />
+                  <AppText color="#c9d0dc" style={{ fontSize: 13.5, lineHeight: 20, flex: 1 }}>
+                    현재까지 특별한 보이스피싱 위험 신호가 발견되지 않았습니다.
+                  </AppText>
+                </View>
+              )}
+            </View>
+          </View>
+
+          {/* 액션 버튼 */}
+          <View style={{ flexDirection: 'row', gap: 9 }}>
+            <ActionButton onPress={() => endSession()}>
+              <StopGlyph size={18} color="#dfe4ee" />
+              <AppText weight="600" color="#dfe4ee" style={{ fontSize: 12.5 }}>
+                분석 종료
+              </AppText>
+            </ActionButton>
+            <ActionButton onPress={() => endSession('chat')}>
+              <FileGlyph size={18} color="#dfe4ee" />
+              <AppText weight="600" color="#dfe4ee" style={{ fontSize: 12.5 }}>
+                기록 보기
+              </AppText>
+            </ActionButton>
+            <ActionButton highlight onPress={() => router.push('/prevention')}>
+              <GuideGlyph size={18} color="#8ab4ff" />
+              <AppText weight="700" color="#8ab4ff" style={{ fontSize: 12.5 }}>
+                대응 가이드
+              </AppText>
+            </ActionButton>
+          </View>
+        </ScrollView>
       </SafeAreaView>
+
+      {/* 종료 마무리 오버레이: 마지막 발화 전사를 받는 동안 표시 */}
+      {finishing ? (
+        <View
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(5,7,13,0.82)',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 14,
+          }}
+        >
+          <ActivityIndicator size="large" color="#5b9bff" />
+          <AppText weight="700" color="#eef2f9" style={{ fontSize: 15 }}>
+            분석 마무리 중…
+          </AppText>
+          <AppText color="#8794A4" style={{ fontSize: 12.5 }}>
+            마지막 대화까지 저장하고 있어요
+          </AppText>
+        </View>
+      ) : null}
     </View>
+  );
+}
+
+function ActionButton({
+  children,
+  onPress,
+  highlight = false,
+}: {
+  children: React.ReactNode;
+  onPress: () => void;
+  highlight?: boolean;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={{
+        flex: 1,
+        alignItems: 'center',
+        gap: 5,
+        paddingVertical: 13,
+        paddingHorizontal: 4,
+        borderRadius: 14,
+        borderWidth: highlight ? 1.5 : 1,
+        borderColor: highlight ? 'rgba(91,155,255,0.7)' : 'rgba(255,255,255,0.09)',
+        backgroundColor: highlight ? 'rgba(63,111,208,0.16)' : 'rgba(255,255,255,0.04)',
+      }}
+    >
+      {children}
+    </Pressable>
   );
 }
