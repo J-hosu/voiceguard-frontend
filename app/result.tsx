@@ -274,7 +274,8 @@ function SummaryTab({ view, isRisk }: { view: ResultView; isRisk: boolean }) {
 /**
  * 대화 내용(전사) 탭.
  * 백엔드 상세(GET /calls/{id})는 전사를 반환하지 않으므로(발화 조회 API 부재),
- * 통화 종료 시 로컬에 저장해둔 전사(turns)를 화자별로 표시한다.
+ * 통화 종료 시 로컬에 저장해둔 전사(turns)를 순서대로 표시한다.
+ * (화자 구분은 신뢰성이 낮아 라벨/좌우 구분 없이 발화 순서대로 그대로 출력)
  * 저장분이 없으면(예: 이전 버전에서 만든 통화, 다른 기기) 안내문을 보여준다.
  */
 function ChatTab({ turns }: { turns: TranscriptTurn[] }) {
@@ -294,49 +295,28 @@ function ChatTab({ turns }: { turns: TranscriptTurn[] }) {
     );
   }
 
-  // 백엔드 화자A/B → 상대방/나로 표시(좌=상대방, 우=나).
-  // ※ 단일 마이크라 실제 '나'를 음성으로 식별할 수 없어, 백엔드 등장순 라벨(화자A=먼저 말한 사람)을
-  //   상대방, 화자B를 나로 두는 근사 매핑이다. 청크마다 라벨이 바뀔 수 있어 완벽하지 않다.
-  const meta = (t: TranscriptTurn) => {
-    if (t.role?.startsWith('화자')) {
-      const isMe = t.role === '화자B';
-      return { isRight: isMe, label: isMe ? '나' : '상대방' };
-    }
-    return { isRight: t.isMine, label: t.isMine ? '나' : '상대방' };
-  };
-
   return (
-    <View style={{ gap: 12 }}>
-      {turns.map((t) => {
-        const { isRight, label } = meta(t);
-        return (
-          <View key={t.turnIndex} style={{ alignItems: isRight ? 'flex-end' : 'flex-start' }}>
-            <AppText color={colors.textMuted} style={{ fontSize: 11, marginBottom: 4 }}>
-              {label}
-            </AppText>
-            <View
-              style={{
-                maxWidth: '82%',
-                backgroundColor: isRight ? colors.primaryFaint : colors.cardAlt,
-                paddingHorizontal: 13,
-                paddingVertical: 10,
-                borderRadius: 14,
-                borderTopRightRadius: isRight ? 4 : 14,
-                borderTopLeftRadius: isRight ? 14 : 4,
-              }}
-            >
-              <HighlightedText
-                text={t.content}
-                keywords={t.keywords ?? []}
-                baseColor={colors.text}
-                highlightColor={colors.primary}
-                weightHighlight="700"
-                style={{ fontSize: 14, lineHeight: 21 }}
-              />
-            </View>
-          </View>
-        );
-      })}
+    <View style={{ gap: 10 }}>
+      {turns.map((t) => (
+        <View
+          key={t.turnIndex}
+          style={{
+            backgroundColor: colors.cardAlt,
+            paddingHorizontal: 14,
+            paddingVertical: 11,
+            borderRadius: 12,
+          }}
+        >
+          <HighlightedText
+            text={t.content}
+            keywords={t.keywords ?? []}
+            baseColor={colors.text}
+            highlightColor={colors.primary}
+            weightHighlight="700"
+            style={{ fontSize: 14, lineHeight: 22 }}
+          />
+        </View>
+      ))}
     </View>
   );
 }
