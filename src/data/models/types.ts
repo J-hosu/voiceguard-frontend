@@ -30,12 +30,15 @@ export interface CallMessage {
   created_at: string;
 }
 
-/** 오디오 청크 분석 응답의 전사 1건 (백엔드 audio_analysis_ack.transcripts[]) */
+/**
+ * 오디오 청크 분석 응답의 전사 메타 1건 (백엔드 audio_analysis_ack.transcripts[]).
+ * 2026-07-13 API_SPEC 갱신: 발화 내용(content)은 더 이상 항목별로 오지 않고,
+ * 응답 최상위 converted_text(그 청크의 전체 전사문)로 통합되었다. 이 항목은
+ * id/turn_index/시간 메타데이터만 담는다.
+ */
 export interface BackendTranscript {
   message_id?: number;
   turn_index?: number;
-  role?: string; // 화자분리 없음 → 보통 'unknown'
-  content?: string;
   start_time?: number; // 초
   end_time?: number; // 초
 }
@@ -62,7 +65,7 @@ export type AnalysisEvent =
       notification?: unknown;
       message?: CallMessage;
     }
-  // ── 오디오 청크(실시간 스트리밍) 응답 ── (전사는 백엔드 Whisper가 수행)
+  // ── 오디오 청크(실시간 스트리밍) 응답 ── (전사는 백엔드가 수행)
   | {
       type: 'audio_analysis_ack';
       log_id: number;
@@ -71,6 +74,7 @@ export type AnalysisEvent =
       risk_score: number;
       risk_level: BackendRiskLevel;
       phishing_type?: string;
+      converted_text?: string; // 이 청크의 전체 전사문(발화 여러 개면 줄바꿈으로 이어짐)
       transcripts?: BackendTranscript[];
       message_ids?: number[];
     }
@@ -84,11 +88,19 @@ export type AnalysisEvent =
       matched_patterns: string[];
       core_evidence: string;
       phishing_type?: string;
+      converted_text?: string;
       transcripts?: BackendTranscript[];
       notification?: unknown;
       message_ids?: number[];
     }
-  | { type: 'audio_chunk_error'; log_id?: number; chunk_index?: number; message: string }
+  | {
+      type: 'audio_chunk_error';
+      log_id?: number;
+      chunk_index?: number;
+      risk_score?: number;
+      risk_level?: BackendRiskLevel;
+      message: string;
+    }
   | { type: 'error'; message: string };
 
 /** 실시간 대화 로그 1턴 (앱이 로컬 기록) */

@@ -71,3 +71,29 @@ export async function fetchCallDetail(id: number): Promise<CallDetail> {
     core_evidence: data.core_evidence ?? '',
   };
 }
+
+/** GET /calls/{id}/messages 발화 1건 (백엔드가 저장한 전사 — 화자분리 없음) */
+export interface CallMessageItem {
+  id: number;
+  log_id: number;
+  turn_index: number;
+  content: string;
+  created_at: string;
+}
+
+/** GET /calls/{id}/messages 응답 */
+export interface CallConversationResponse {
+  log_id: number;
+  messages: CallMessageItem[];
+}
+
+/** 통화 대화 내역 조회 (실시간·파일분석 공통 — 백엔드가 저장한 전체 발화를 turn_index 순서로 반환) */
+export async function fetchCallMessages(id: number): Promise<CallConversationResponse> {
+  const res = await fetch(`${BASE_URL_HTTP}/calls/${id}/messages`);
+  if (!res.ok) throw new Error(`대화 내역 조회 실패 (${res.status})`);
+  const data = (await res.json()) as Partial<CallConversationResponse>;
+  return {
+    log_id: data.log_id ?? id,
+    messages: Array.isArray(data.messages) ? data.messages : [],
+  };
+}

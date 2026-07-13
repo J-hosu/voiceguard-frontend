@@ -20,13 +20,19 @@ import {
   toPercent,
 } from '@/core/utils/riskLevel';
 import { evidenceBullets, recommendedAction } from '@/data/mock/infoContent';
-import { fetchCallDetail, type CallDetail } from '@/data/services/callsApi';
-import type { TranscriptTurn } from '@/data/models/types';
+import { fetchCallDetail, fetchCallMessages, type CallDetail } from '@/data/services/callsApi';
 import { useCallStore } from '@/state/callStore';
 import { useSettingsStore } from '@/state/settingsStore';
 import { useTranscriptStore } from '@/state/transcriptStore';
 
 type Tab = 'summary' | 'chat' | 'evidence';
+
+/** 대화 내용 탭 표시용 발화 1건(백엔드 조회 또는 로컬 fallback 공통 형태) */
+interface ChatMessage {
+  turnIndex: number;
+  content: string;
+  keywords?: string[];
+}
 
 /** 백엔드 목록 항목 + 상세를 합친 결과 화면 뷰모델 */
 interface ResultView {
@@ -50,24 +56,58 @@ export default function Result() {
   const loaded = useCallStore((s) => s.loaded);
   const fetchCalls = useCallStore((s) => s.fetchCalls);
   const dangerThreshold = useSettingsStore((s) => s.dangerThreshold);
-  // 통화별 전사(로컬 저장). 통화 종료 시 realtime에서 logId별로 저장한 대화 전문.
+  // 통화별 전사(로컬 저장) — 백엔드 조회가 실패했을 때만 쓰는 fallback.
   const hydrateTranscripts = useTranscriptStore((s) => s.hydrate);
-  const transcriptTurns = useTranscriptStore((s) => (Number.isFinite(id) ? s.byLog[id] : undefined)) ?? [];
+  const localTurns = useTranscriptStore((s) => (Number.isFinite(id) ? s.byLog[id] : undefined)) ?? [];
 
   const [tab, setTab] = useState<Tab>(initialTab);
   const [detail, setDetail] = useState<CallDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // 대화 내용: 백엔드 GET /calls/{id}/messages 가 주 소스. null=아직 못 받아옴(로컬 fallback 사용).
+  const [backendMessages, setBackendMessages] = useState<ChatMessage[] | null>(null);
 
   // 목록이 아직 없으면 백엔드에서 받아온다(딥링크/새로고침 대비).
   useEffect(() => {
     if (!loaded) void fetchCalls();
   }, [loaded, fetchCalls]);
 
-  // 로컬 전사 저장분 로드(앱 재시작/딥링크 대비. 같은 세션이면 이미 메모리에 있음).
+  // 로컬 전사 저장분 로드 — 백엔드 조회가 실패할 때만 쓰는 fallback이라 미리 준비해둔다.
   useEffect(() => {
     void hydrateTranscripts();
   }, [hydrateTranscripts]);
+
+  // 대화 내용(전사) 조회: 통화 종료 직후 백엔드가 마지막 발화까지 저장을 마칠 시간이
+  // 필요할 수 있어(실시간 경로), 재시도 없이 1회만 조회하고 실패하면 로컬 fallback을 쓴다.
+  useEffect(() => {
+    let alive = true;
+    if (!Number.isFinite(id)) return;
+    fetchCallMessages(id)
+      .then((res) => {
+        if (!alive) return;
+        const mapped: ChatMessage[] = res.messages
+          .map((m) => ({
+            turnIndex: m.turn_index,
+            content: (m.content ?? '').trim(),
+            keywords: extractKeywords(m.content ?? '', 4),
+          }))
+          .filter((m) => m.content.length > 0);
+        setBackendMessages(mapped);
+      })
+      .catch(() => {
+        if (alive) setBackendMessages(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+
+  const localMessages: ChatMessage[] = localTurns.map((t) => ({
+    turnIndex: t.turnIndex,
+    content: t.content,
+    keywords: t.keywords,
+  }));
+  const chatMessages = backendMessages && backendMessages.length > 0 ? backendMessages : localMessages;
 
   // 상세(근거) 조회
   useEffect(() => {
@@ -212,7 +252,7 @@ export default function Result() {
           </View>
 
           {tab === 'summary' ? <SummaryTab view={view} isRisk={isRisk} /> : null}
-          {tab === 'chat' ? <ChatTab turns={transcriptTurns} /> : null}
+          {tab === 'chat' ? <ChatTab turns={chatMessages} /> : null}
           {tab === 'evidence' ? <EvidenceTab view={view} level={level} /> : null}
         </Card>
       </ScrollView>
@@ -273,12 +313,11 @@ function SummaryTab({ view, isRisk }: { view: ResultView; isRisk: boolean }) {
 
 /**
  * 대화 내용(전사) 탭.
- * 백엔드 상세(GET /calls/{id})는 전사를 반환하지 않으므로(발화 조회 API 부재),
- * 통화 종료 시 로컬에 저장해둔 전사(turns)를 순서대로 표시한다.
+ * 백엔드 GET /calls/{id}/messages 로 저장된 전체 발화를 turn_index 순서대로 표시한다.
  * (화자 구분은 신뢰성이 낮아 라벨/좌우 구분 없이 발화 순서대로 그대로 출력)
- * 저장분이 없으면(예: 이전 버전에서 만든 통화, 다른 기기) 안내문을 보여준다.
+ * 조회 실패 시에만 로컬 저장분(fallback)을 대신 보여주며, 그마저 없으면 안내문을 표시한다.
  */
-function ChatTab({ turns }: { turns: TranscriptTurn[] }) {
+function ChatTab({ turns }: { turns: ChatMessage[] }) {
   const { colors } = useTheme();
 
   if (turns.length === 0) {
@@ -289,7 +328,7 @@ function ChatTab({ turns }: { turns: TranscriptTurn[] }) {
           저장된 대화 내용이 없습니다
         </AppText>
         <AppText color={colors.textMuted} style={{ fontSize: 12.5, textAlign: 'center', lineHeight: 19 }}>
-          대화 전문은 이 기기에서 진행한 통화에만 저장됩니다.{'\n'}(백엔드에는 위험도·탐지 근거만 보관)
+          분석이 아직 끝나지 않았거나, 대화 내역을 불러오지 못했습니다.
         </AppText>
       </View>
     );

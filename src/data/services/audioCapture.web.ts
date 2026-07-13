@@ -76,6 +76,7 @@ class WebAudioCapture implements AudioCaptureService {
   private stopped = false;
   private workletUrl: string | null = null;
   private rate = 0; // 실제 캡처 샘플레이트(마지막 flush에 사용)
+  private firstFrameSeen = false; // 진단용: 워클릿이 실제로 프레임을 전달했는지
 
   onChunk(cb: (c: AudioChunk) => void) {
     this.chunkCb = cb;
@@ -96,10 +97,18 @@ class WebAudioCapture implements AudioCaptureService {
           channelCount: 1,
         } as MediaTrackConstraints,
       });
-    } catch {
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[VoiceGuard] getUserMedia 실패', e);
       this.errCb?.('마이크 접근에 실패했습니다. 브라우저 마이크 권한을 허용해 주세요.');
       return;
     }
+    const track = this.stream.getAudioTracks()[0];
+    // eslint-disable-next-line no-console
+    console.log(
+      '[VoiceGuard] mic 획득',
+      track ? { label: track.label, muted: track.muted, readyState: track.readyState, settings: track.getSettings() } : 'no audio track',
+    );
     if (this.stopped) {
       this.stop();
       return;
@@ -115,10 +124,23 @@ class WebAudioCapture implements AudioCaptureService {
     //    (일부 브라우저는 마이크 native 레이트와 다른 ctx에 createMediaStreamSource 연결을 거부)
     //    WAV 헤더가 실제 레이트를 기록하므로 폴백해도 백엔드는 정상 해석한다.
     const ok = (await this.setupGraph(Ctx, TARGET_RATE)) || (await this.setupGraph(Ctx, 0));
+    // eslint-disable-next-line no-console
+    console.log('[VoiceGuard] 오디오 그래프 구성', { ok, ctxState: this.ctx?.state, sampleRate: this.rate });
     if (!ok) {
       if (!this.stopped) this.errCb?.('오디오 캡처 초기화에 실패했습니다. (크롬/엣지 권장)');
       return;
     }
+    // 5초 뒤에도 첫 프레임이 안 들어오면(워클릿이 process()를 호출 안 함) 경고 로그.
+    setTimeout(() => {
+      if (!this.stopped && !this.firstFrameSeen) {
+        // eslint-disable-next-line no-console
+        console.warn('[VoiceGuard] 5초 경과했는데 오디오 프레임이 한 번도 안 들어옴', {
+          ctxState: this.ctx?.state,
+          trackMuted: this.stream?.getAudioTracks()[0]?.muted,
+          trackReadyState: this.stream?.getAudioTracks()[0]?.readyState,
+        });
+      }
+    }, 5000);
   }
 
   /** 주어진 샘플레이트로 ctx+worklet+그래프를 구성. 성공하면 true. (rate=0이면 기본 레이트) */
@@ -142,6 +164,11 @@ class WebAudioCapture implements AudioCaptureService {
       this.node = new AudioWorkletNode(this.ctx!, 'pcm-capture');
       this.node.port.onmessage = (e: MessageEvent) => {
         const frame = e.data as Float32Array;
+        if (!this.firstFrameSeen) {
+          this.firstFrameSeen = true;
+          // eslint-disable-next-line no-console
+          console.log('[VoiceGuard] 첫 오디오 프레임 수신', { frameLength: frame.length });
+        }
         this.frames.push(frame);
         this.frameLen += frame.length;
         while (this.frameLen >= chunkSamples) this.flush(chunkSamples, actualRate);
@@ -197,6 +224,8 @@ class WebAudioCapture implements AudioCaptureService {
     const bytes = floatToWav(chunk, rate);
     const base64 = Buffer.from(new Uint8Array(bytes)).toString('base64');
     this.chunkIndex += 1;
+    // eslint-disable-next-line no-console
+    console.log('[VoiceGuard] 오디오 청크 생성', { chunkIndex: this.chunkIndex, bytes: bytes.byteLength });
     this.chunkCb?.({ bytes, base64, chunkIndex: this.chunkIndex });
   }
 

@@ -111,9 +111,14 @@ class RealAnalyzeConnection implements AnalyzeConnection {
   private ready = false;
 
   constructor() {
-    this.ws = new WebSocket(`${BASE_URL_WS}${WS_ANALYZE_PATH}`);
+    const url = `${BASE_URL_WS}${WS_ANALYZE_PATH}`;
+    // eslint-disable-next-line no-console
+    console.log('[VoiceGuard] WS 연결 시도', url);
+    this.ws = new WebSocket(url);
     this.ws.onopen = () => {
       this.ready = true;
+      // eslint-disable-next-line no-console
+      console.log('[VoiceGuard] WS 연결됨, 대기열 전송', { queued: this.queue.length });
       this.queue.forEach((m) => this.ws.send(JSON.stringify(m)));
       this.queue = [];
     };
@@ -125,8 +130,14 @@ class RealAnalyzeConnection implements AnalyzeConnection {
         this.cb?.({ type: 'error', message: '응답을 해석할 수 없습니다.' });
       }
     };
-    this.ws.onerror = () => {
+    this.ws.onerror = (ev) => {
+      // eslint-disable-next-line no-console
+      console.error('[VoiceGuard] WS 오류', ev);
       this.cb?.({ type: 'error', message: '서버에 연결할 수 없습니다.' });
+    };
+    this.ws.onclose = (ev) => {
+      // eslint-disable-next-line no-console
+      console.log('[VoiceGuard] WS 종료', { code: ev.code, reason: ev.reason, wasClean: ev.wasClean });
     };
   }
 
@@ -153,6 +164,13 @@ class RealAnalyzeConnection implements AnalyzeConnection {
   }
 
   sendAudioChunk(base64: string, chunkIndex: number) {
+    // eslint-disable-next-line no-console
+    console.log('[VoiceGuard] audio_chunk 전송', {
+      chunkIndex,
+      base64Len: base64.length,
+      wsReadyState: this.ws.readyState, // 0=CONNECTING 1=OPEN 2=CLOSING 3=CLOSED
+      queuedInsteadOfSent: !this.ready,
+    });
     // API_SPEC 7: base64 JSON 방식(chunk_index로 응답 상관관계 추적 용이).
     this.send({ type: 'audio_chunk', chunk_index: chunkIndex, audio_format: 'wav', audio_base64: base64 });
   }

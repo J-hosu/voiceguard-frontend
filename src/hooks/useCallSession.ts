@@ -89,49 +89,31 @@ export function useCallSession(
         setState((prev) => ({ ...prev, logId: e.call.id }));
         return;
       }
-      // 오디오 청크 응답: 백엔드가 3초 청크마다 "그 청크만" 독립 전사해 조각으로 내려준다.
-      // 한 문장이 청크 경계에서 잘려 여러 조각으로 오므로, 같은 화자(role)의 연속 조각을
-      // 하나의 말풍선으로 병합해 대화가 끊겨 보이는 문제를 해결한다. (화자가 바뀌면 새 말풍선)
+      // 오디오 청크 응답: 백엔드가 3초 청크마다 그 청크의 전체 전사문을 converted_text로
+      // 내려준다(2026-07-13 API_SPEC 갱신 — 화자분리 제거와 함께 항목별 content도 없어지고
+      // 청크 하나 = 전사문 하나로 통합됨). 청크 하나당 말풍선 하나로 그대로 이어붙인다.
       if (e.type === 'audio_analysis_ack' || e.type === 'audio_phishing_detected') {
         const score = e.risk_score;
         maxScore.current = Math.max(maxScore.current, score);
         const matched = e.type === 'audio_phishing_detected' ? e.matched_patterns : [];
         const evidence = e.type === 'audio_phishing_detected' ? e.core_evidence : '';
-        const incoming = (e.transcripts ?? [])
-          .map((tr) => ({
-            role: (tr.role ?? 'unknown').trim() || 'unknown',
-            content: (tr.content ?? '').trim(),
-            atSec: Math.round(tr.start_time ?? 0),
-          }))
-          .filter((t) => t.content.length > 0);
+        const content = (e.converted_text ?? '').trim();
+        const atSec = Math.round(e.transcripts?.[0]?.start_time ?? 0);
 
         setState((prev) => {
           const level = riskLevelFromScore(score, dangerThreshold);
           const turns: TranscriptTurn[] = [...prev.turns];
-          for (const inc of incoming) {
-            const last = turns[turns.length - 1];
-            if (last && last.role === inc.role) {
-              // 같은 화자의 연속 발화 → 직전 말풍선에 이어붙인다.
-              const merged = `${last.content} ${inc.content}`.replace(/\s+/g, ' ').trim();
-              turns[turns.length - 1] = {
-                ...last,
-                content: merged,
-                riskScore: score,
-                keywords: extractKeywords(merged, 4),
-              };
-            } else {
-              // 화자 전환(또는 첫 발화) → 새 말풍선.
-              turnCounter.current += 1;
-              turns.push({
-                turnIndex: turnCounter.current,
-                role: inc.role,
-                isMine: false,
-                content: inc.content,
-                atSec: inc.atSec,
-                riskScore: score,
-                keywords: extractKeywords(inc.content, 4),
-              });
-            }
+          if (content.length > 0) {
+            turnCounter.current += 1;
+            turns.push({
+              turnIndex: turnCounter.current,
+              role: 'unknown',
+              isMine: false,
+              content,
+              atSec,
+              riskScore: score,
+              keywords: extractKeywords(content, 4),
+            });
           }
           const next: CallSessionState = {
             ...prev,
